@@ -1,0 +1,57 @@
+from flask import Flask, g, jsonify, request
+from werkzeug.exceptions import HTTPException
+
+from app.config import load_config, validate_config
+from app.utils.responses import APIError
+
+
+def create_app(config=None):
+    app = Flask(__name__)
+    app.config.update(load_config())
+    if config:
+        app.config.update(config)
+    validate_config(app.config)
+
+    from app.routes import register_routes
+    register_routes(app)
+
+    @app.get("/api/health")
+    def health():
+        return jsonify(success=True, status="healthy")
+
+    @app.errorhandler(APIError)
+    def api_error(error):
+        response = jsonify(success=False, error={"code": error.code, "message": error.message})
+        if error.status == 401:
+            response.headers["WWW-Authenticate"] = "Bearer"
+        return response, error.status
+
+    @app.errorhandler(HTTPException)
+    def http_error(error):
+        return api_error(APIError(error.name.upper().replace(" ", "_"), error.name, error.code))
+
+    @app.errorhandler(Exception)
+    def unexpected_error(error):
+        # Do not log exception messages, request bodies, JWTs or provider response bodies.
+        app.logger.error("Unhandled exception type: %s", type(error).__name__)
+        return api_error(APIError("INTERNAL_ERROR", "An unexpected error occurred.", 500))
+
+    @app.after_request
+    def headers(response):
+        origin = request.headers.get("Origin")
+        if origin in app.config["CORS_ORIGINS"]:
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type"
+            response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+            response.vary.add("Origin")
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.teardown_appcontext
+    def close_client(_error):
+        db = g.pop("db", None)
+        if db is not None:
+            db.close()
+
+    return app
