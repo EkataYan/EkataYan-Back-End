@@ -1,10 +1,13 @@
 from functools import wraps
+import logging
 from uuid import UUID
 
 from flask import current_app, g, request
 
 from app.services.supabase_service import SupabaseService
 from app.utils.responses import APIError
+
+logger = logging.getLogger(__name__)
 
 
 def authenticated(fn):
@@ -20,6 +23,7 @@ def authenticated(fn):
             g.user_id = str(UUID(g.user["id"]))
         except (ValueError, TypeError, KeyError):
             raise APIError("UNAUTHORIZED", "Invalid user identity.", 401) from None
+        logger.info("Authenticated Supabase user uuid=%s", g.user_id)
         return fn(*args, **kwargs)
     return wrapped
 
