@@ -3,9 +3,13 @@
 Uses Auth, PostgREST and Storage directly, avoiding a second HTTP client stack.
 Every database/storage request uses the caller's JWT and is subject to RLS.
 """
+import logging
+
 import httpx
 
 from app.utils.responses import APIError
+
+logger = logging.getLogger(__name__)
 
 
 class SupabaseService:
@@ -22,13 +26,18 @@ class SupabaseService:
     def request(self, method, path, **kwargs):
         try:
             response = self.client.request(method, path, **kwargs)
-        except httpx.RequestError:
+        except httpx.RequestError as error:
+            logger.error("Supabase request failed method=%s path=%s error=%s", method, path, type(error).__name__)
             raise APIError("UPSTREAM_UNAVAILABLE", "Supabase is temporarily unavailable.", 503) from None
         if response.is_error:
             try:
                 code = response.json().get("code", "")
             except (ValueError, AttributeError):
                 code = ""
+            logger.error(
+                "Supabase returned an error method=%s path=%s status=%s code=%s",
+                method, path, response.status_code, code or "unknown",
+            )
             if response.status_code == 401:
                 raise APIError("UNAUTHORIZED", "Invalid or expired access token.", 401)
             if response.status_code == 403 or code == "42501":

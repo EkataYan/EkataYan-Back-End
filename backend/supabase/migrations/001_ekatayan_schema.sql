@@ -8,6 +8,8 @@ create type public.expense_split_type as enum ('equal', 'exact');
 create table public.profiles (
   id uuid primary key references auth.users(id) on delete cascade,
   display_name text not null default '',
+  email text not null default '',
+  phone text not null default '',
   bio text not null default '' check (char_length(bio) <= 1000),
   home_city text not null default '',
   language text not null default 'en' check (language in ('en', 'si', 'ta')),
@@ -130,10 +132,31 @@ begin if new.created_by <> old.created_by then raise exception 'trip owner canno
 create trigger trips_owner_immutable before update on public.trips for each row execute function public.prevent_trip_owner_change();
 
 create or replace function public.create_profile() returns trigger language plpgsql security definer set search_path = public as $$
-begin insert into public.profiles(id, display_name) values (new.id, coalesce(new.raw_user_meta_data->>'full_name','')) on conflict (id) do nothing; return new; end $$;
+begin
+  insert into public.profiles(id, display_name, email, phone)
+  values (
+    new.id,
+    coalesce(new.raw_user_meta_data->>'full_name', ''),
+    coalesce(new.email, ''),
+    coalesce(new.raw_user_meta_data->>'phone', new.phone, '')
+  )
+  on conflict (id) do update set
+    display_name = excluded.display_name,
+    email = excluded.email,
+    phone = excluded.phone;
+  raise log 'profile provisioned for auth user %', new.id;
+  return new;
+end $$;
 create trigger auth_user_profile after insert on auth.users for each row execute function public.create_profile();
 -- Existing projects: run once after migration to backfill profiles.
-insert into public.profiles(id, display_name) select id, coalesce(raw_user_meta_data->>'full_name','') from auth.users on conflict (id) do nothing;
+insert into public.profiles(id, display_name, email, phone)
+select id, coalesce(raw_user_meta_data->>'full_name',''), coalesce(email,''),
+       coalesce(raw_user_meta_data->>'phone', phone, '')
+from auth.users
+on conflict (id) do update set
+  display_name = excluded.display_name,
+  email = excluded.email,
+  phone = excluded.phone;
 
 create or replace function public.add_trip_owner() returns trigger language plpgsql security definer set search_path = public as $$
 begin insert into public.trip_members(trip_id,user_id,role) values (new.id,new.created_by,'owner'); return new; end $$;

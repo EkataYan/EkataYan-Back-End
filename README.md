@@ -33,9 +33,9 @@ It listens at `http://127.0.0.1:5000`; verify with `GET /api/health`. For a prod
 
 ## Supabase initialization
 
-Run [001_ekatayan_schema.sql](backend/supabase/migrations/001_ekatayan_schema.sql) in the Supabase SQL editor or apply it with the Supabase CLI. Create the two private buckets named `profile-images` and `trip-images`, with a 5 MB limit and JPEG/PNG/WebP MIME types; the migration includes the matching object policies. The migration creates:
+For a new project, run [001_ekatayan_schema.sql](backend/supabase/migrations/001_ekatayan_schema.sql) in the Supabase SQL editor or apply it with the Supabase CLI. If `001` was already applied, run `002_profile_contact_fields.sql` instead to add/backfill profile contact fields and update the provisioning trigger. Create the two private buckets named `profile-images` and `trip-images`, with a 5 MB limit and JPEG/PNG/WebP MIME types; the migration includes the matching object policies. The migration creates:
 
-- `profiles` linked one-to-one with Supabase-managed `auth.users`
+- `profiles` linked one-to-one with Supabase-managed `auth.users`, including email and phone contact fields
 - `trips` and `trip_members`
 - `itineraries`, `itinerary_days`, and `itinerary_activities`
 - `expenses` and `expense_participants`
