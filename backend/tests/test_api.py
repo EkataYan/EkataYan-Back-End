@@ -41,3 +41,84 @@ def test_cors_only_allows_configured_origin(client):
     denied = client.get("/api/health", headers={"Origin": "https://untrusted.example"})
     assert allowed.headers["Access-Control-Allow-Origin"] == "http://localhost:3000"
     assert "Access-Control-Allow-Origin" not in denied.headers
+
+
+def test_ai_is_optional_at_startup(app, client):
+    assert app.extensions["ai_service"] is None
+    assert client.get("/api/health").status_code == 200
+
+
+def test_ai_endpoint_returns_503_when_not_configured(client, auth_headers):
+    response = client.post("/api/itineraries/generate", headers=auth_headers, json={})
+
+    assert response.status_code == 503
+    assert response.json == {
+        "success": False,
+        "error": {"code": "AI_NOT_CONFIGURED", "message": "AI service is not configured"},
+    }
+
+
+def test_complete_ai_config_initializes_existing_service(monkeypatch):
+    import json
+    from datetime import date
+
+    from app import create_app
+    from conftest import FakeSupabase
+
+    class ProviderResponse:
+        content = b"json"
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            itinerary = {
+                "overview": "A day in Kandy",
+                "currency": "LKR",
+                "days": [{
+                    "day_number": 1,
+                    "date": "2026-10-01",
+                    "locations": ["Kandy"],
+                    "activities": [{
+                        "title": "Temple visit",
+                        "location": "Kandy",
+                        "suggested_time": "09:00:00",
+                        "description": "Visit the Temple of the Tooth",
+                        "estimated_cost": "2000.00",
+                        "transport": "Walk",
+                    }],
+                }],
+            }
+            return {"choices": [{"message": {"content": json.dumps(itinerary)}}]}
+
+    provider_call = {}
+
+    def fake_post(url, **kwargs):
+        provider_call.update(url=url, **kwargs)
+        return ProviderResponse()
+
+    monkeypatch.setattr("app.services.ai_service.httpx.post", fake_post)
+
+    configured = create_app({
+        "TESTING": True,
+        "SUPABASE_URL": "https://example.supabase.co",
+        "SUPABASE_KEY": "test-key",
+        "SUPABASE_SERVICE_ROLE_KEY": "",
+        "CORS_ORIGINS": [],
+        "AI_API_KEY": "test-ai-key",
+        "AI_BASE_URL": "https://ai.example/v1",
+        "AI_MODEL": "test-model",
+        "SUPABASE_FACTORY": FakeSupabase,
+    })
+
+    service = configured.extensions["ai_service"]
+    assert service is not None
+    result = service.generate_itinerary({
+        "start_date": date(2026, 10, 1),
+        "end_date": date(2026, 10, 1),
+        "currency": "LKR",
+    })
+    assert result["days"][0]["date"] == "2026-10-01"
+    assert provider_call["url"] == "https://ai.example/v1/chat/completions"
+    assert provider_call["json"]["model"] == "test-model"
+    assert provider_call["headers"]["Authorization"] == "Bearer test-ai-key"

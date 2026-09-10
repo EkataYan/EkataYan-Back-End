@@ -23,13 +23,23 @@ Copy-Item .env.example .env
 
 Set `SUPABASE_URL` and `SUPABASE_KEY` in `backend/.env`. `SUPABASE_KEY` must be the project’s publishable key (or legacy anon key), never a service-role/secret key. Use explicit `CORS_ORIGINS`; the sample contains development origins. Set `AI_BASE_URL`, `AI_MODEL`, and `AI_API_KEY` only when enabling the OpenAI-compatible itinerary provider. Set `WEATHER_API_KEY` only when enabling WeatherAPI.
 
-Start the server from `backend/`:
+AI configuration is optional. Omit `AI_API_KEY`, `AI_BASE_URL`, and `AI_MODEL` to run the backend with itinerary generation disabled, or set all three to enable the OpenAI-compatible provider. Calls to the generation endpoint return HTTP 503 while AI is disabled; unrelated endpoints continue normally.
+
+Start the development server from `backend/`:
 
 ```powershell
 python run.py
 ```
 
 It listens at `http://127.0.0.1:5000`; verify with `GET /api/health`. For a production deployment, use a process manager/WSGI server such as Waitress, set `FLASK_ENV=production`, keep `FLASK_DEBUG=false`, terminate TLS at the deployment edge, and configure exact Android/web origins.
+
+The production server included in `requirements.txt` is Waitress. From `backend/`, use:
+
+```powershell
+waitress-serve --listen=0.0.0.0:$env:PORT run:app
+```
+
+On a Linux deployment platform, Gunicorn is installed by `requirements.txt`; use `gunicorn --bind 0.0.0.0:$PORT run:app` from `backend/`.
 
 ## Supabase initialization
 

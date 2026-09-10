@@ -4,3 +4,5 @@ httpx>=0.28,<0.29
 pydantic>=2.11,<3
 Pillow>=11.3,<13
 waitress>=3.0,<4
+# Production WSGI server for Linux deployment platforms.
+gunicorn>=23,<24; platform_system != "Windows"

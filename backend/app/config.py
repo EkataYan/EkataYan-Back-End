@@ -6,6 +6,8 @@ from urllib.parse import urlparse
 from dotenv import load_dotenv
 from pathlib import Path
 
+AI_CONFIG_KEYS = ("AI_API_KEY", "AI_BASE_URL", "AI_MODEL")
+
 
 def load_config():
     load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
@@ -46,3 +48,8 @@ def validate_config(config):
         raise RuntimeError("FLASK_DEBUG is allowed only with FLASK_ENV=development.")
     if "*" in config["CORS_ORIGINS"]:
         raise RuntimeError("CORS_ORIGINS must contain explicit origins, not a wildcard.")
+
+
+def ai_is_configured(config):
+    """AI is an optional feature and is enabled only by a complete configuration."""
+    return all(config.get(name) for name in AI_CONFIG_KEYS)
