@@ -1,7 +1,8 @@
 from flask import Flask, g, jsonify, request
 from werkzeug.exceptions import HTTPException
 
-from app.config import load_config, validate_config
+from app.config import ai_is_configured, load_config, validate_config
+from app.services.ai_service import AIService
 from app.utils.responses import APIError
 
 
@@ -11,6 +12,9 @@ def create_app(config=None):
     if config:
         app.config.update(config)
     validate_config(app.config)
+
+    # AI is optional. Do not construct its service unless every provider setting exists.
+    app.extensions["ai_service"] = AIService(app.config) if ai_is_configured(app.config) else None
 
     from app.routes import register_routes
     register_routes(app)
