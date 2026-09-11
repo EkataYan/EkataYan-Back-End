@@ -1,7 +1,7 @@
 from flask import Blueprint, current_app, g
 from app.middleware.auth_middleware import authenticated
 from app.utils.responses import success
-from app.utils.validators import ProfileInput, parse
+from app.utils.validators import ProfileInput, ProfilePatchInput, parse
 
 bp = Blueprint("users", __name__)
 
@@ -22,4 +22,12 @@ def get_me():
 @authenticated
 def update_me():
     data = parse(ProfileInput).model_dump(mode="json")
+    return success(g.db.update("profiles", {"id": g.user_id}, data))
+
+
+@bp.patch("/users/me")
+@authenticated
+def patch_me():
+    profile = parse(ProfilePatchInput, error_status=400)
+    data = profile.model_dump(mode="json", exclude_unset=True)
     return success(g.db.update("profiles", {"id": g.user_id}, data))

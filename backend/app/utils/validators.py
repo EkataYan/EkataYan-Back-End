@@ -1,6 +1,7 @@
 from datetime import date, datetime, time, timezone
 from decimal import Decimal
 from typing import Annotated, Literal
+import re
 from uuid import UUID
 
 from flask import request
@@ -23,6 +24,30 @@ class ProfileInput(Input):
     home_city: Annotated[str, Field(max_length=160)] = ""
     language: Literal["en", "si", "ta"] = "en"
     interests: Tags = []
+
+
+class ProfilePatchInput(Input):
+    display_name: Text | None = None
+    bio: Annotated[str, Field(max_length=1000)] | None = None
+    home_city: Annotated[str, Field(max_length=160)] | None = None
+    language: Literal["en", "si", "ta"] | None = None
+    interests: Tags | None = None
+    phone: Annotated[str, Field(max_length=32)] | None = None
+
+    @field_validator("phone")
+    @classmethod
+    def valid_phone(cls, value):
+        if value is not None and value and not re.fullmatch(r"\+?[0-9 ()-]{7,32}", value):
+            raise ValueError("phone contains invalid characters or has an invalid length")
+        return value
+
+    @model_validator(mode="after")
+    def supplied_fields(self):
+        if not self.model_fields_set:
+            raise ValueError("At least one profile field is required.")
+        if any(getattr(self, field) is None for field in self.model_fields_set):
+            raise ValueError("Profile fields cannot be null.")
+        return self
 
 
 class TripInput(Input):
@@ -126,7 +151,7 @@ class WeatherQuery(Input):
     date: date
 
 
-def parse(model, data=None):
+def parse(model, data=None, error_status=422):
     if data is None:
         if not request.is_json:
             raise APIError("INVALID_REQUEST", "Content-Type must be application/json.", 415)
@@ -136,7 +161,7 @@ def parse(model, data=None):
     except ValidationError as error:
         # Field names/types only: never reflect arbitrary request values or exception contexts.
         fields = sorted({str(e["loc"][0]) if e["loc"] else "body" for e in error.errors()})
-        raise APIError("INVALID_REQUEST", "Invalid fields or constraints: " + ", ".join(fields), 422) from None
+        raise APIError("INVALID_REQUEST", "Invalid fields or constraints: " + ", ".join(fields), error_status) from None
 
 
 def identifier(value):
