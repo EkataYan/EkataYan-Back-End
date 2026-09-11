@@ -146,9 +146,18 @@ class ItineraryResult(Input):
 
 
 class WeatherQuery(Input):
-    latitude: Annotated[Decimal, Field(ge=-90, le=90, allow_inf_nan=False)]
-    longitude: Annotated[Decimal, Field(ge=-180, le=180, allow_inf_nan=False)]
+    location: Annotated[str, Field(min_length=1, max_length=160)] | None = None
+    latitude: Annotated[Decimal, Field(ge=-90, le=90, allow_inf_nan=False)] | None = None
+    longitude: Annotated[Decimal, Field(ge=-180, le=180, allow_inf_nan=False)] | None = None
     date: date
+
+    @model_validator(mode="after")
+    def location_or_coordinates(self):
+        if not self.location and (self.latitude is None or self.longitude is None):
+            raise ValueError("Provide location or both latitude and longitude.")
+        if (self.latitude is None) != (self.longitude is None):
+            raise ValueError("Latitude and longitude must be supplied together.")
+        return self
 
 
 def parse(model, data=None, error_status=422):

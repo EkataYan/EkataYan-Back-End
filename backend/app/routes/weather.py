@@ -1,4 +1,5 @@
 from flask import Blueprint, current_app, request
+from app.middleware.auth_middleware import authenticated
 from app.services.weather_service import WeatherService
 from app.utils.responses import success
 from app.utils.validators import WeatherQuery, parse
@@ -7,7 +8,8 @@ bp = Blueprint("weather", __name__)
 
 
 @bp.get("/weather")
+@authenticated
 def weather():
     query = parse(WeatherQuery, request.args.to_dict())
-    data = WeatherService(current_app.config).forecast(query.latitude, query.longitude, query.date)
+    data = WeatherService(current_app.config).forecast(query.location, query.latitude, query.longitude, query.date)
     return success(data)

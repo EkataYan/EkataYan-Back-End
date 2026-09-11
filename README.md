@@ -57,7 +57,7 @@ It also defines indexes, profile and owner-membership triggers, RLS policies, an
 
 Responses use `{ "success": true, "data": ... }`; failures use `{ "success": false, "error": { "code", "message" } }`.
 
-Public endpoints: `GET /api/health`, `GET /api/weather?latitude=&longitude=&date=`.
+Public endpoint: `GET /api/health`.
 
 Protected endpoints:
 
@@ -65,6 +65,7 @@ Protected endpoints:
 - `POST`/`GET /api/trips`; `GET`/`PUT`/`DELETE /api/trips/<trip_id>`
 - `POST`/`GET /api/trips/<trip_id>/members`; `DELETE /api/trips/<trip_id>/members/<user_id>`
 - `POST /api/itineraries/generate`; `GET /api/trips/<trip_id>/itineraries`
+- `GET /api/weather?location=&date=` (or authenticated latitude/longitude coordinates)
 - `POST`/`GET /api/trips/<trip_id>/expenses`; `PUT`/`DELETE /api/expenses/<expense_id>`
 - `POST`/`GET /api/trips/<trip_id>/messages`
 - `GET /api/notifications`; `PUT /api/notifications/<notification_id>/read`

@@ -43,6 +43,6 @@ def update(expense_id):
 @authenticated
 def delete(expense_id):
     expense_id = identifier(expense_id)
-    editable(expense_id)
-    g.db.delete("expenses", {"id": expense_id})
+    expense = editable(expense_id)
+    g.db.rpc("delete_expense", {"p_trip_id": expense["trip_id"], "p_expense_id": expense_id})
     return success({"deleted": True})

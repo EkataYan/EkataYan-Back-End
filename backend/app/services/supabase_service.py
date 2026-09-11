@@ -44,6 +44,8 @@ class SupabaseService:
                 raise APIError("FORBIDDEN", "You do not have permission for this action.", 403)
             if response.status_code == 409 or code in ("23505", "23503"):
                 raise APIError("CONFLICT", "The record conflicts with existing data or references.", 409)
+            if code == "P0002":
+                raise APIError("NOT_FOUND", "Resource not found or not accessible.", 404)
             if code in ("23514", "22023", "22P02"):
                 raise APIError("INVALID_REQUEST", "The data violates a database constraint.", 422)
             if response.status_code == 429:
@@ -57,7 +59,14 @@ class SupabaseService:
             raise APIError("UPSTREAM_ERROR", "Supabase returned an invalid response.", 502) from None
 
     def get_user(self):
-        user = self.request("GET", "/auth/v1/user")
+        try:
+            user = self.request("GET", "/auth/v1/user")
+        except APIError as error:
+            # Supabase Auth may return 403 for a malformed/expired JWT. At the authentication
+            # boundary this means unauthenticated, while PostgREST/Storage 403s remain forbidden.
+            if error.status in (401, 403):
+                raise APIError("UNAUTHORIZED", "Invalid or expired access token.", 401) from None
+            raise
         if not isinstance(user, dict) or not user.get("id"):
             raise APIError("UNAUTHORIZED", "Invalid or expired access token.", 401)
         return user
