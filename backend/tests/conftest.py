@@ -10,7 +10,17 @@ class FakeSupabase:
     def __init__(self, _config, token):
         self.token = token
         self.user = {"id": "00000000-0000-4000-8000-000000000001", "email": "test@example.com"}
-        self.rows = {"trips": [], "profiles": [{"id": self.user["id"], "display_name": "Test"}]}
+        self.rows = {"trips": [], "profiles": [{
+            "id": self.user["id"],
+            "email": self.user["email"],
+            "display_name": "Test",
+            "bio": "Original bio",
+            "home_city": "Kandy",
+            "language": "en",
+            "interests": ["history"],
+            "avatar_path": None,
+            "phone": "+94112223344",
+        }]}
 
     def close(self):
         pass

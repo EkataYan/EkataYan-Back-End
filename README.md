@@ -61,7 +61,7 @@ Public endpoints: `GET /api/health`, `GET /api/weather?latitude=&longitude=&date
 
 Protected endpoints:
 
-- `GET /api/auth/session`; `GET`/`PUT /api/users/me`
+- `GET /api/auth/session`; `GET`/`PUT`/`PATCH /api/users/me`
 - `POST`/`GET /api/trips`; `GET`/`PUT`/`DELETE /api/trips/<trip_id>`
 - `POST`/`GET /api/trips/<trip_id>/members`; `DELETE /api/trips/<trip_id>/members/<user_id>`
 - `POST /api/itineraries/generate`; `GET /api/trips/<trip_id>/itineraries`

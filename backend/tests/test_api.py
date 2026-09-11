@@ -1,3 +1,6 @@
+import pytest
+
+
 def test_health_is_public(client):
     response = client.get("/api/health")
     assert response.status_code == 200
@@ -17,6 +20,68 @@ def test_profile_fetch_uses_authenticated_user_id(client, auth_headers):
 
     assert response.status_code == 200
     assert response.json["data"]["id"] == "00000000-0000-4000-8000-000000000001"
+
+
+def test_profile_patch_updates_single_field(client, auth_headers):
+    response = client.patch("/api/users/me", headers=auth_headers, json={"display_name": "  New Name  "})
+
+    assert response.status_code == 200
+    assert response.json["data"]["display_name"] == "New Name"
+    assert response.json["data"]["email"] == "test@example.com"
+
+
+def test_profile_patch_updates_multiple_fields(client, auth_headers):
+    response = client.patch("/api/users/me", headers=auth_headers, json={
+        "bio": "  Traveller and technology enthusiast  ",
+        "home_city": "Colombo",
+        "language": "si",
+        "interests": ["beaches", "hiking"],
+        "phone": "+94 77 123 4567",
+    })
+
+    assert response.status_code == 200
+    assert response.json["data"]["bio"] == "Traveller and technology enthusiast"
+    assert response.json["data"]["home_city"] == "Colombo"
+    assert response.json["data"]["language"] == "si"
+    assert response.json["data"]["interests"] == ["beaches", "hiking"]
+    assert response.json["data"]["phone"] == "+94 77 123 4567"
+
+
+def test_profile_patch_preserves_omitted_fields(client, auth_headers):
+    response = client.patch("/api/users/me", headers=auth_headers, json={"bio": "Updated"})
+
+    assert response.status_code == 200
+    assert response.json["data"]["display_name"] == "Test"
+    assert response.json["data"]["home_city"] == "Kandy"
+    assert response.json["data"]["phone"] == "+94112223344"
+
+
+@pytest.mark.parametrize("payload", [
+    {"display_name": "   "},
+    {"phone": "not-a-phone"},
+    {"interests": "hiking"},
+    {},
+])
+def test_profile_patch_rejects_invalid_input(client, auth_headers, payload):
+    response = client.patch("/api/users/me", headers=auth_headers, json=payload)
+
+    assert response.status_code == 400
+    assert response.json["error"]["code"] == "INVALID_REQUEST"
+
+
+def test_profile_patch_requires_authentication(client):
+    response = client.patch("/api/users/me", json={"bio": "Updated"})
+
+    assert response.status_code == 401
+
+
+def test_profile_patch_cannot_update_auth_owned_email(client, auth_headers):
+    response = client.patch("/api/users/me", headers=auth_headers, json={"email": "attacker@example.com"})
+
+    assert response.status_code == 400
+    assert response.json["error"]["code"] == "INVALID_REQUEST"
+    profile = client.get("/api/users/me", headers=auth_headers)
+    assert profile.json["data"]["email"] == "test@example.com"
 
 
 def test_invalid_json_has_standard_error(client, auth_headers):
@@ -40,6 +105,7 @@ def test_cors_only_allows_configured_origin(client):
     allowed = client.get("/api/health", headers={"Origin": "http://localhost:3000"})
     denied = client.get("/api/health", headers={"Origin": "https://untrusted.example"})
     assert allowed.headers["Access-Control-Allow-Origin"] == "http://localhost:3000"
+    assert "PATCH" in allowed.headers["Access-Control-Allow-Methods"]
     assert "Access-Control-Allow-Origin" not in denied.headers
 
 
