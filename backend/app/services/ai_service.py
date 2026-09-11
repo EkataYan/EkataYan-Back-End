@@ -18,7 +18,7 @@ class AIService:
     def generate_itinerary(self, request_data):
         if not self.config.get("AI_API_KEY") or not self.config.get("AI_BASE_URL") or not self.config.get("AI_MODEL"):
             raise APIError("AI_NOT_CONFIGURED", "AI itinerary generation is not configured yet.", 503)
-        if self.config.get("AI_PROVIDER", "openai_compatible") not in ("", "openai_compatible"):
+        if self.config.get("AI_PROVIDER", "openai_compatible") not in ("", "openai_compatible", "gemini"):
             raise APIError("AI_PROVIDER_UNSUPPORTED", "The configured AI provider is not supported.", 503)
         schema = ItineraryResult.model_json_schema()
         prompt = (

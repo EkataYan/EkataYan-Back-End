@@ -18,7 +18,11 @@ def generate():
     require_trip(trip_id, admin=True)
     itinerary = ai_service.generate_itinerary(payload.model_dump())
     saved = g.db.rpc("save_itinerary", {"p_trip_id": trip_id, "p_data": itinerary})
-    return success(saved, 201)
+    # The RPC is transactional but returns only the parent row. Return the complete persisted
+    # graph so clients render database-authoritative data rather than the provider response.
+    complete = g.db.one("itineraries", {"id": saved["id"]},
+                        select="*,itinerary_days(*,itinerary_activities(*))")
+    return success(complete, 201)
 
 
 @bp.get("/trips/<trip_id>/itineraries")

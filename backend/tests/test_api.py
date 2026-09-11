@@ -15,6 +15,20 @@ def test_protected_endpoint_requires_bearer_token(client):
     assert response.headers["WWW-Authenticate"] == "Bearer"
 
 
+def test_supabase_auth_forbidden_is_mapped_to_unauthorized():
+    from app.services.supabase_service import SupabaseService
+    from app.utils.responses import APIError
+
+    service = object.__new__(SupabaseService)
+    def rejected(*_args, **_kwargs):
+        raise APIError("FORBIDDEN", "You do not have permission for this action.", 403)
+    service.request = rejected
+    with pytest.raises(APIError) as captured:
+        service.get_user()
+    assert captured.value.status == 401
+    assert captured.value.code == "UNAUTHORIZED"
+
+
 def test_profile_fetch_uses_authenticated_user_id(client, auth_headers):
     response = client.get("/api/users/me", headers=auth_headers)
 
@@ -124,6 +138,62 @@ def test_ai_endpoint_returns_503_when_not_configured(client, auth_headers):
     }
 
 
+def test_weather_requires_authentication(client):
+    response = client.get("/api/weather?latitude=7.29&longitude=80.63&date=2026-10-01")
+    assert response.status_code == 401
+    assert response.json["error"]["code"] == "UNAUTHORIZED"
+
+
+def test_weather_accepts_profile_city_and_normalizes_provider_data(client, auth_headers, monkeypatch):
+    class ProviderResponse:
+        def raise_for_status(self):
+            pass
+        def json(self):
+            return {"location": {"name": "Kandy"}, "forecast": {"forecastday": [{
+                "day": {"condition": {"text": "Patchy rain", "icon": "//icon"}, "mintemp_c": 20,
+                        "maxtemp_c": 28, "daily_chance_of_rain": 70, "uv": 5, "avghumidity": 81,
+                        "maxwind_kph": 18.5}, "astro": {"sunrise": "06:01 AM"}}]}}
+
+    provider_call = {}
+    def fake_get(url, **kwargs):
+        provider_call.update(url=url, **kwargs)
+        return ProviderResponse()
+    monkeypatch.setattr("app.services.weather_service.httpx.get", fake_get)
+    from app import create_app
+    from conftest import FakeSupabase
+    app = create_app({"TESTING": True, "SUPABASE_URL": "https://example.supabase.co", "SUPABASE_KEY": "test-key",
+                      "SUPABASE_SERVICE_ROLE_KEY": "", "CORS_ORIGINS": [], "AI_API_KEY": "", "AI_BASE_URL": "",
+                      "AI_MODEL": "", "WEATHER_API_KEY": "weather-key", "WEATHER_PROVIDER": "weatherapi",
+                      "SUPABASE_FACTORY": FakeSupabase})
+    response = app.test_client().get("/api/weather?location=Kandy&date=2026-10-01", headers=auth_headers)
+    assert response.status_code == 200
+    assert response.json["data"] | {"location": "Kandy", "humidity": 81, "wind_kph": 18.5, "sunrise": "06:01 AM"} == response.json["data"]
+    assert provider_call["params"]["q"] == "Kandy"
+
+
+def test_expense_delete_uses_authorized_atomic_rpc(client, auth_headers):
+    from conftest import FakeSupabase
+
+    # The fake is request-scoped, so exercise the adapter contract through a focused fake factory.
+    class ExpenseFake(FakeSupabase):
+        last_rpc = None
+        def __init__(self, config, token):
+            super().__init__(config, token)
+            self.rows["trips"] = [{"id": "00000000-0000-4000-8000-000000000020", "created_by": self.user["id"]}]
+            self.rows["expenses"] = [{"id": "00000000-0000-4000-8000-000000000030", "trip_id": "00000000-0000-4000-8000-000000000020", "created_by": self.user["id"]}]
+        def rpc(self, name, data):
+            ExpenseFake.last_rpc = (name, data)
+            return True
+
+    from app import create_app
+    app = create_app({"TESTING": True, "SUPABASE_URL": "https://example.supabase.co", "SUPABASE_KEY": "test-key",
+                      "SUPABASE_SERVICE_ROLE_KEY": "", "CORS_ORIGINS": [], "AI_API_KEY": "", "AI_BASE_URL": "",
+                      "AI_MODEL": "", "SUPABASE_FACTORY": ExpenseFake})
+    response = app.test_client().delete("/api/expenses/00000000-0000-4000-8000-000000000030", headers=auth_headers)
+    assert response.status_code == 200
+    assert ExpenseFake.last_rpc[0] == "delete_expense"
+
+
 def test_complete_ai_config_initializes_existing_service(monkeypatch):
     import json
     from datetime import date
@@ -174,6 +244,7 @@ def test_complete_ai_config_initializes_existing_service(monkeypatch):
         "AI_API_KEY": "test-ai-key",
         "AI_BASE_URL": "https://ai.example/v1",
         "AI_MODEL": "test-model",
+        "AI_PROVIDER": "gemini",
         "SUPABASE_FACTORY": FakeSupabase,
     })
 
