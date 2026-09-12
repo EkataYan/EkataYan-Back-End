@@ -285,7 +285,12 @@ def test_complete_ai_config_initializes_existing_service(monkeypatch):
                     }],
                 }],
             }
-            return {"choices": [{"message": {"content": json.dumps(itinerary)}}]}
+            return {
+                "status": "completed",
+                "steps": [{"type": "model_output", "content": [
+                    {"type": "text", "text": json.dumps(itinerary)},
+                ]}],
+            }
 
     provider_call = {}
 
@@ -316,6 +321,10 @@ def test_complete_ai_config_initializes_existing_service(monkeypatch):
         "currency": "LKR",
     })
     assert result["days"][0]["date"] == "2026-10-01"
-    assert provider_call["url"] == "https://ai.example/v1/chat/completions"
+    assert provider_call["url"] == "https://ai.example/v1/interactions"
     assert provider_call["json"]["model"] == "test-model"
-    assert provider_call["headers"]["Authorization"] == "Bearer test-ai-key"
+    assert provider_call["json"]["store"] is False
+    assert provider_call["json"]["response_format"]["mime_type"] == "application/json"
+    assert "schema" not in provider_call["json"]["response_format"]
+    assert "Output JSON schema:" in provider_call["json"]["input"]
+    assert provider_call["headers"]["x-goog-api-key"] == "test-ai-key"
