@@ -1,6 +1,7 @@
 from flask import Blueprint, current_app, g
 
 from app.middleware.auth_middleware import authenticated, require_trip
+from app.repositories import ItineraryRepository
 from app.utils.responses import APIError, success
 from app.utils.validators import GenerateInput, identifier, parse
 
@@ -17,11 +18,11 @@ def generate():
     trip_id = str(payload.trip_id)
     require_trip(trip_id, admin=True)
     itinerary = ai_service.generate_itinerary(payload.model_dump())
-    saved = g.db.rpc("save_itinerary", {"p_trip_id": trip_id, "p_data": itinerary})
+    repository = ItineraryRepository(g.db)
+    saved = repository.save(trip_id, itinerary)
     # The RPC is transactional but returns only the parent row. Return the complete persisted
     # graph so clients render database-authoritative data rather than the provider response.
-    complete = g.db.one("itineraries", {"id": saved["id"]},
-                        select="*,itinerary_days(*,itinerary_activities(*))")
+    complete = repository.get(saved["id"])
     return success(complete, 201)
 
 
@@ -30,4 +31,4 @@ def generate():
 def list_itineraries(trip_id):
     trip_id = identifier(trip_id)
     require_trip(trip_id)
-    return success(g.db.select("itineraries", {"trip_id": trip_id}, select="*,itinerary_days(*,itinerary_activities(*))"))
+    return success(ItineraryRepository(g.db).list(trip_id))

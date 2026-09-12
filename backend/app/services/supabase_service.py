@@ -7,6 +7,7 @@ import logging
 
 import httpx
 
+from app.config import supabase_config_error
 from app.utils.responses import APIError
 
 logger = logging.getLogger(__name__)
@@ -14,6 +15,15 @@ logger = logging.getLogger(__name__)
 
 class SupabaseService:
     def __init__(self, config, token):
+        configuration_error = supabase_config_error(config)
+        if configuration_error:
+            # Log only the validation message. It contains variable names, never values.
+            logger.error("Supabase integration is unavailable: %s", configuration_error)
+            raise APIError(
+                "SUPABASE_NOT_CONFIGURED",
+                "The database service is not configured correctly.",
+                503,
+            )
         self.client = httpx.Client(
             base_url=config["SUPABASE_URL"].rstrip("/"),
             headers={"apikey": config["SUPABASE_KEY"], "Authorization": f"Bearer {token}"},

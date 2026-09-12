@@ -64,6 +64,7 @@ class TripInput(Input):
     accommodation_preference: Text = "any"
     transportation_preference: Text = "any"
     additional_requirements: Annotated[str, Field(max_length=2000)] = ""
+    status: Literal["planned", "ongoing", "completed", "cancelled"] = "planned"
 
     @model_validator(mode="after")
     def dates(self):
@@ -88,6 +89,7 @@ class Participant(Input):
 
 class ExpenseInput(Input):
     title: Text
+    description: Annotated[str, Field(max_length=2000)] = ""
     amount: Annotated[Decimal, Field(gt=0, max_digits=14, decimal_places=2, allow_inf_nan=False)]
     currency: Literal["LKR", "USD", "EUR", "GBP", "INR", "AUD"] = "LKR"
     category: Text = "other"
@@ -128,6 +130,52 @@ class Activity(Input):
     estimated_cost: Money
     transport: Annotated[str, Field(max_length=1000)]
     notes: Annotated[str, Field(max_length=2000)] = ""
+    external_place_id: Annotated[str, Field(max_length=300)] | None = None
+    latitude: Annotated[Decimal, Field(ge=-90, le=90, allow_inf_nan=False)] | None = None
+    longitude: Annotated[Decimal, Field(ge=-180, le=180, allow_inf_nan=False)] | None = None
+    category: Text = "other"
+
+    @model_validator(mode="after")
+    def coordinate_pair(self):
+        if (self.latitude is None) != (self.longitude is None):
+            raise ValueError("Latitude and longitude must be supplied together.")
+        return self
+
+
+class WishlistInput(Input):
+    name: Text
+    cover_path: Annotated[str, Field(max_length=500)] | None = None
+
+
+class WishlistPatchInput(Input):
+    name: Text | None = None
+    cover_path: Annotated[str, Field(max_length=500)] | None = None
+
+    @model_validator(mode="after")
+    def supplied_fields(self):
+        if not self.model_fields_set:
+            raise ValueError("At least one wishlist field is required.")
+        if "name" in self.model_fields_set and self.name is None:
+            raise ValueError("Wishlist name cannot be null.")
+        return self
+
+
+class SavedPlaceInput(Input):
+    provider: Annotated[str, Field(min_length=1, max_length=40)] = "manual"
+    external_place_id: Annotated[str, Field(max_length=300)] | None = None
+    name: Annotated[str, Field(min_length=1, max_length=200)]
+    location: Annotated[str, Field(max_length=300)] = ""
+    description: Annotated[str, Field(max_length=2000)] = ""
+    latitude: Annotated[Decimal, Field(ge=-90, le=90, allow_inf_nan=False)] | None = None
+    longitude: Annotated[Decimal, Field(ge=-180, le=180, allow_inf_nan=False)] | None = None
+    image_url: Annotated[str, Field(max_length=2000)] | None = None
+    metadata: dict = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def coordinate_pair(self):
+        if (self.latitude is None) != (self.longitude is None):
+            raise ValueError("Latitude and longitude must be supplied together.")
+        return self
 
 
 class ItineraryDay(Input):

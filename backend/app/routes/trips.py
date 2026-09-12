@@ -1,5 +1,6 @@
 from flask import Blueprint, g
 from app.middleware.auth_middleware import authenticated, require_trip
+from app.repositories import TripRepository
 from app.utils.responses import success
 from app.utils.validators import TripInput, identifier, pagination, parse
 
@@ -11,14 +12,14 @@ bp = Blueprint("trips", __name__)
 def create():
     data = parse(TripInput).model_dump(mode="json")
     data["created_by"] = g.user_id
-    return success(g.db.insert("trips", data), 201)
+    return success(TripRepository(g.db).create(data), 201)
 
 
 @bp.get("/trips")
 @authenticated
 def list_trips():
     page = pagination()
-    return success(g.db.select("trips", **page), pagination=page)
+    return success(TripRepository(g.db).list(page), pagination=page)
 
 
 @bp.get("/trips/<trip_id>")
@@ -33,7 +34,7 @@ def update_trip(trip_id):
     trip_id = identifier(trip_id)
     data = parse(TripInput).model_dump(mode="json")
     require_trip(trip_id, admin=True)
-    return success(g.db.update("trips", {"id": trip_id}, data))
+    return success(TripRepository(g.db).update(trip_id, data))
 
 
 @bp.delete("/trips/<trip_id>")
@@ -41,5 +42,5 @@ def update_trip(trip_id):
 def delete_trip(trip_id):
     trip_id = identifier(trip_id)
     require_trip(trip_id, owner=True)
-    g.db.delete("trips", {"id": trip_id})
+    TripRepository(g.db).delete(trip_id)
     return success({"deleted": True})
