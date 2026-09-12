@@ -1,5 +1,7 @@
 from io import BytesIO
 
+import json
+
 import pytest
 from PIL import Image
 
@@ -352,6 +354,28 @@ def test_ai_destination_suggestion_mode_allows_empty_destinations(client, auth_h
     assert response.status_code == 418
 
 
+def test_planner_accepts_string_destinations_and_null_optional_fields(client, auth_headers):
+    class FakeAI:
+        def generate_itinerary(self, planner):
+            assert [item.name for item in planner.destinations] == ["Kandy", "Ella"]
+            assert planner.transport_preferences == []
+            assert planner.interests == []
+            assert planner.travel_style is None
+            from app.utils.responses import APIError
+            raise APIError("expected", "request reached AI", 418)
+
+    client.application.extensions["ai_service"] = FakeAI()
+    response = client.post(
+        "/api/itineraries/preview",
+        headers=auth_headers,
+        json=planner_payload(
+            destinations=["Kandy", "Ella"], transport_preferences=None,
+            interests=None, travel_style="", special_requests="",
+        ),
+    )
+    assert response.status_code == 418
+
+
 def test_gemini_structured_output_retries_once():
     import json
     from app.services.ai_service import AIService
@@ -386,5 +410,39 @@ def test_gemini_structured_output_retries_once():
     result = service.generate_itinerary(planner_payload())
     assert len(interactions.calls) == 2
     assert interactions.calls[0]["response_format"]["mime_type"] == "application/json"
-    assert "schema" in interactions.calls[0]["response_format"]
+    assert "schema" not in interactions.calls[0]["response_format"]
+    assert "Required response JSON schema" in interactions.calls[0]["input"]
     assert result.trip.duration_days == 3
+
+
+def test_gemini_schema_is_supplied_in_prompt_not_response_format():
+    from app.services.ai_service import APPLICATION_ITINERARY_SCHEMA
+
+    assert set(APPLICATION_ITINERARY_SCHEMA["properties"]) == {
+        "trip", "days", "cost_estimate", "recommendations"
+    }
+
+
+def test_gaos_bad_request_maps_to_clean_502():
+    from app.services.ai_service import AIService
+    from app.utils.responses import APIError
+
+    BadRequestError = type(
+        "BadRequestError", (Exception,), {"__module__": "google.genai._gaos.lib.compat_errors"}
+    )
+
+    class Interactions:
+        def create(self, **_kwargs):
+            error = BadRequestError("Request contains an invalid argument.")
+            error.status_code = 400
+            raise error
+
+    client = type("Client", (), {"interactions": Interactions()})()
+    service = AIService(
+        {"GEMINI_API_KEY": "test", "GEMINI_MODEL": "gemini-test", "GEMINI_TIMEOUT_SECONDS": "60"},
+        client_factory=lambda **_kwargs: client,
+    )
+    with pytest.raises(APIError) as raised:
+        service.generate_itinerary(planner_payload())
+    assert raised.value.status == 502
+    assert raised.value.code == "ai_request_failed"

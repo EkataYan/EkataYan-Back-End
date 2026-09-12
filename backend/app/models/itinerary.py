@@ -1,7 +1,7 @@
 from datetime import date, time
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator
 
 
 class Schema(BaseModel):
@@ -40,6 +40,27 @@ class PlannerRequest(Schema):
     special_requests: Annotated[str, Field(max_length=2000)] | None = None
     allow_ai_destination_suggestions: bool = False
     suggest_additional_places: bool = False
+
+    @field_validator("destinations", mode="before")
+    @classmethod
+    def normalize_destinations(cls, value):
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return [{"name": item} if isinstance(item, str) else item for item in value]
+        return value
+
+    @field_validator("transport_preferences", "interests", mode="before")
+    @classmethod
+    def normalize_optional_lists(cls, value):
+        return [] if value is None else value
+
+    @field_validator(
+        "accommodation_preference", "travel_style", "travel_pace", "special_requests", mode="before"
+    )
+    @classmethod
+    def normalize_optional_text(cls, value):
+        return None if isinstance(value, str) and not value.strip() else value
 
     @model_validator(mode="after")
     def constraints(self):
