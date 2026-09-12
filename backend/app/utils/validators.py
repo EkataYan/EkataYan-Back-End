@@ -77,6 +77,30 @@ class GenerateInput(TripInput):
     trip_id: UUID
 
 
+class PlannerInput(Input):
+    destinations: Annotated[list[Text], Field(max_length=20)] = []
+    traveller_type: Literal["Solo", "Couple", "Friends", "Family", "Group"]
+    traveller_count: Annotated[StrictInt, Field(ge=1, le=100)]
+    start_date: date
+    end_date: date
+    transport_preferences: Tags = []
+    accommodation_preference: Text = "Let AI decide"
+    travel_style: Text = "Let AI decide"
+    interests: Tags = []
+    travel_pace: Literal["Relaxed", "Balanced", "Packed"] = "Balanced"
+    special_requests: Annotated[str, Field(max_length=2000)] = ""
+    let_ai_choose_destinations: bool = False
+    suggest_additional_places: bool = False
+
+    @model_validator(mode="after")
+    def planner_constraints(self):
+        if not self.destinations and not self.let_ai_choose_destinations:
+            raise ValueError("At least one destination or AI destination discovery is required.")
+        if self.end_date < self.start_date or (self.end_date - self.start_date).days > 29:
+            raise ValueError("Trips must last between 1 and 30 days.")
+        return self
+
+
 class MemberInput(Input):
     user_id: UUID
     role: Literal["member", "admin"] = "member"
@@ -191,6 +215,11 @@ class ItineraryResult(Input):
     currency: Literal["LKR", "USD", "EUR", "GBP", "INR", "AUD"]
     days: Annotated[list[ItineraryDay], Field(min_length=1, max_length=30)]
     recommendations: Tags = []
+
+
+class PlannedItinerarySave(Input):
+    trip: TripInput
+    itinerary: ItineraryResult
 
 
 class WeatherQuery(Input):

@@ -17,9 +17,7 @@ def test_railway_health_is_public_and_dependency_free():
         "TESTING": True,
         "SUPABASE_URL": "",
         "SUPABASE_KEY": "",
-        "AI_API_KEY": "",
-        "AI_BASE_URL": "",
-        "AI_MODEL": "",
+        "GEMINI_API_KEY": "",
         "WEATHER_API_KEY": "",
         "CORS_ORIGINS": [],
     })
@@ -36,9 +34,7 @@ def test_missing_supabase_configuration_does_not_crash_worker_import():
         "TESTING": True,
         "SUPABASE_URL": "",
         "SUPABASE_KEY": "",
-        "AI_API_KEY": "",
-        "AI_BASE_URL": "",
-        "AI_MODEL": "",
+        "GEMINI_API_KEY": "",
         "WEATHER_API_KEY": "",
         "CORS_ORIGINS": [],
     })
@@ -159,8 +155,8 @@ def test_profile_picture_upload_persists_storage_path_on_profile(auth_headers):
     Image.new("RGB", (24, 24), "#238DD1").save(image, format="PNG")
     image.seek(0)
     app = create_app({"TESTING": True, "SUPABASE_URL": "https://example.supabase.co", "SUPABASE_KEY": "test-key",
-                      "SUPABASE_SERVICE_ROLE_KEY": "", "CORS_ORIGINS": [], "AI_API_KEY": "", "AI_BASE_URL": "",
-                      "AI_MODEL": "", "SUPABASE_FACTORY": StorageUploadFake})
+                      "SUPABASE_SERVICE_ROLE_KEY": "", "CORS_ORIGINS": [], "GEMINI_API_KEY": "",
+                      "SUPABASE_FACTORY": StorageUploadFake})
 
     response = app.test_client().post(
         "/api/storage/profile-picture",
@@ -196,8 +192,8 @@ def test_profile_picture_download_is_authenticated_and_account_scoped(auth_heade
             return image_bytes, "image/jpeg"
 
     app = create_app({"TESTING": True, "SUPABASE_URL": "https://example.supabase.co", "SUPABASE_KEY": "test-key",
-                      "SUPABASE_SERVICE_ROLE_KEY": "", "CORS_ORIGINS": [], "AI_API_KEY": "", "AI_BASE_URL": "",
-                      "AI_MODEL": "", "SUPABASE_FACTORY": StorageDownloadFake})
+                      "SUPABASE_SERVICE_ROLE_KEY": "", "CORS_ORIGINS": [], "GEMINI_API_KEY": "",
+                      "SUPABASE_FACTORY": StorageDownloadFake})
 
     response = app.test_client().get("/api/storage/profile-picture", headers=auth_headers)
 
@@ -257,12 +253,12 @@ def test_ai_is_optional_at_startup(app, client):
 
 
 def test_ai_endpoint_returns_503_when_not_configured(client, auth_headers):
-    response = client.post("/api/itineraries/generate", headers=auth_headers, json={})
+    response = client.post("/api/itineraries/preview", headers=auth_headers, json={})
 
     assert response.status_code == 503
     assert response.json == {
         "success": False,
-        "error": {"code": "AI_NOT_CONFIGURED", "message": "AI service is not configured"},
+        "error": {"code": "ai_not_configured", "message": "AI itinerary generation is currently unavailable."},
     }
 
 
@@ -290,8 +286,8 @@ def test_weather_accepts_profile_city_and_normalizes_provider_data(client, auth_
     from app import create_app
     from conftest import FakeSupabase
     app = create_app({"TESTING": True, "SUPABASE_URL": "https://example.supabase.co", "SUPABASE_KEY": "test-key",
-                      "SUPABASE_SERVICE_ROLE_KEY": "", "CORS_ORIGINS": [], "AI_API_KEY": "", "AI_BASE_URL": "",
-                      "AI_MODEL": "", "WEATHER_API_KEY": "weather-key", "WEATHER_PROVIDER": "weatherapi",
+                      "SUPABASE_SERVICE_ROLE_KEY": "", "CORS_ORIGINS": [], "GEMINI_API_KEY": "",
+                      "WEATHER_API_KEY": "weather-key", "WEATHER_PROVIDER": "weatherapi",
                       "SUPABASE_FACTORY": FakeSupabase})
     response = app.test_client().get("/api/weather?location=Kandy&date=2026-10-01", headers=auth_headers)
     assert response.status_code == 200
@@ -315,84 +311,80 @@ def test_expense_delete_uses_authorized_atomic_rpc(client, auth_headers):
 
     from app import create_app
     app = create_app({"TESTING": True, "SUPABASE_URL": "https://example.supabase.co", "SUPABASE_KEY": "test-key",
-                      "SUPABASE_SERVICE_ROLE_KEY": "", "CORS_ORIGINS": [], "AI_API_KEY": "", "AI_BASE_URL": "",
-                      "AI_MODEL": "", "SUPABASE_FACTORY": ExpenseFake})
+                      "SUPABASE_SERVICE_ROLE_KEY": "", "CORS_ORIGINS": [], "GEMINI_API_KEY": "",
+                      "SUPABASE_FACTORY": ExpenseFake})
     response = app.test_client().delete("/api/expenses/00000000-0000-4000-8000-000000000030", headers=auth_headers)
     assert response.status_code == 200
     assert ExpenseFake.last_rpc[0] == "delete_expense"
 
 
-def test_complete_ai_config_initializes_existing_service(monkeypatch):
+def planner_payload(**overrides):
+    payload = {
+        "destinations": [{"name": "Ella"}], "traveller_type": "Solo", "traveller_count": 1,
+        "start_date": "2026-10-01", "end_date": "2026-10-03", "transport_preferences": [],
+        "accommodation_preference": None, "travel_style": None, "interests": [], "travel_pace": None,
+        "special_requests": None, "allow_ai_destination_suggestions": False,
+    }
+    return payload | overrides
+
+
+@pytest.mark.parametrize("payload,message", [
+    (planner_payload(end_date="2026-09-30"), "Trip dates are invalid."),
+    (planner_payload(destinations=[]), "Please select at least one destination."),
+    (planner_payload(traveller_count=0), "Traveller count must be greater than zero."),
+])
+def test_planner_validation_errors_are_clean(client, auth_headers, payload, message):
+    client.application.extensions["ai_service"] = object()
+    response = client.post("/api/itineraries/preview", headers=auth_headers, json=payload)
+    assert response.status_code == 400
+    assert response.json["error"] == {"code": "validation_error", "message": message}
+
+
+def test_ai_destination_suggestion_mode_allows_empty_destinations(client, auth_headers):
+    class FakeAI:
+        def generate_itinerary(self, planner):
+            assert planner.allow_ai_destination_suggestions is True
+            from app.utils.responses import APIError
+            raise APIError("expected", "request reached AI", 418)
+    client.application.extensions["ai_service"] = FakeAI()
+    response = client.post("/api/itineraries/preview", headers=auth_headers,
+                           json=planner_payload(destinations=[], allow_ai_destination_suggestions=True))
+    assert response.status_code == 418
+
+
+def test_gemini_structured_output_retries_once():
     import json
-    from datetime import date
+    from app.services.ai_service import AIService
 
-    from app import create_app
-    from conftest import FakeSupabase
-
-    class ProviderResponse:
-        content = b"json"
-
-        def raise_for_status(self):
-            pass
-
-        def json(self):
-            itinerary = {
-                "overview": "A day in Kandy",
-                "currency": "LKR",
-                "days": [{
-                    "day_number": 1,
-                    "date": "2026-10-01",
-                    "locations": ["Kandy"],
-                    "activities": [{
-                        "title": "Temple visit",
-                        "location": "Kandy",
-                        "suggested_time": "09:00:00",
-                        "description": "Visit the Temple of the Tooth",
-                        "estimated_cost": "2000.00",
-                        "transport": "Walk",
-                    }],
-                }],
-            }
-            return {
-                "status": "completed",
-                "steps": [{"type": "model_output", "content": [
-                    {"type": "text", "text": json.dumps(itinerary)},
-                ]}],
-            }
-
-    provider_call = {}
-
-    def fake_post(url, **kwargs):
-        provider_call.update(url=url, **kwargs)
-        return ProviderResponse()
-
-    monkeypatch.setattr("app.services.ai_service.httpx.post", fake_post)
-
-    configured = create_app({
-        "TESTING": True,
-        "SUPABASE_URL": "https://example.supabase.co",
-        "SUPABASE_KEY": "test-key",
-        "SUPABASE_SERVICE_ROLE_KEY": "",
-        "CORS_ORIGINS": [],
-        "AI_API_KEY": "test-ai-key",
-        "AI_BASE_URL": "https://ai.example/v1",
-        "AI_MODEL": "test-model",
-        "AI_PROVIDER": "gemini",
-        "SUPABASE_FACTORY": FakeSupabase,
-    })
-
-    service = configured.extensions["ai_service"]
-    assert service is not None
-    result = service.generate_itinerary({
-        "start_date": date(2026, 10, 1),
-        "end_date": date(2026, 10, 1),
-        "currency": "LKR",
-    })
-    assert result["days"][0]["date"] == "2026-10-01"
-    assert provider_call["url"] == "https://ai.example/v1/interactions"
-    assert provider_call["json"]["model"] == "test-model"
-    assert provider_call["json"]["store"] is False
-    assert provider_call["json"]["response_format"]["mime_type"] == "application/json"
-    assert "schema" not in provider_call["json"]["response_format"]
-    assert "Output JSON schema:" in provider_call["json"]["input"]
-    assert provider_call["headers"]["x-goog-api-key"] == "test-ai-key"
+    valid = {
+        "trip": {"title": "Ella Escape", "summary": "A balanced Ella trip.", "route": ["Ella"],
+                 "start_date": "2026-10-01", "end_date": "2026-10-03", "duration_days": 3,
+                 "traveller_type": "Solo", "traveller_count": 1, "travel_style": "Comfort", "travel_pace": "Balanced"},
+        "days": [{"day_number": day, "date": f"2026-10-0{day}", "destination": "Ella",
+                  "title": f"Ella day {day}", "summary": "A sensible day.", "activities": [{
+                      "id": f"ella-{day}-1", "name": "Ella walk", "category": "Nature",
+                      "location": {"name": "Ella", "latitude": None, "longitude": None},
+                      "start_time": "09:00", "end_time": "10:00", "duration_minutes": 60,
+                      "description": "Explore Ella.", "estimated_cost_lkr": 1000,
+                      "transport_from_previous": "Walk", "travel_time_minutes": 10}],
+                  "day_estimated_cost_lkr": {"min": 3000, "max": 5000}} for day in range(1, 4)],
+        "cost_estimate": {"currency": "LKR", "accommodation": {"min": 10000, "max": 15000},
+                          "transport": {"min": 2000, "max": 4000}, "food": {"min": 5000, "max": 8000},
+                          "activities": {"min": 3000, "max": 5000}, "total": {"min": 20000, "max": 32000},
+                          "disclaimer": "AI-generated estimate only. Actual prices may vary."},
+        "recommendations": [],
+    }
+    class Interactions:
+        def __init__(self): self.calls = []
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            return type("Interaction", (), {"output_text": "not-json" if len(self.calls) == 1 else json.dumps(valid)})()
+    interactions = Interactions()
+    client = type("Client", (), {"interactions": interactions})()
+    service = AIService({"GEMINI_API_KEY": "test", "GEMINI_MODEL": "gemini-test", "GEMINI_TIMEOUT_SECONDS": "60"},
+                        client_factory=lambda **_kwargs: client)
+    result = service.generate_itinerary(planner_payload())
+    assert len(interactions.calls) == 2
+    assert interactions.calls[0]["response_format"]["mime_type"] == "application/json"
+    assert "schema" in interactions.calls[0]["response_format"]
+    assert result.trip.duration_days == 3
