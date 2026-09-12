@@ -11,9 +11,14 @@ AI_CONFIG_KEYS = ("AI_API_KEY", "AI_BASE_URL", "AI_MODEL")
 
 def load_config():
     load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
-    names = ("SUPABASE_URL", "SUPABASE_KEY", "SUPABASE_SERVICE_ROLE_KEY", "AI_PROVIDER",
+    names = ("SUPABASE_URL", "AI_PROVIDER",
              "AI_API_KEY", "AI_BASE_URL", "AI_MODEL", "WEATHER_API_KEY", "WEATHER_PROVIDER")
     config = {name: os.getenv(name, "").strip() for name in names}
+    config["AI_PROVIDER"] = config["AI_PROVIDER"] or "openai_compatible"
+    config["WEATHER_PROVIDER"] = config["WEATHER_PROVIDER"] or "weatherapi"
+    config["SUPABASE_KEY"] = next((os.getenv(name, "").strip() for name in (
+        "SUPABASE_KEY", "SUPABASE_PUBLISHABLE_KEY", "SUPABASE_ANON_KEY"
+    ) if os.getenv(name, "").strip()), "")
     config.update(
         ENVIRONMENT=os.getenv("FLASK_ENV", "production"),
         DEBUG=os.getenv("FLASK_DEBUG", "false").lower() in ("1", "true"),
@@ -25,16 +30,17 @@ def load_config():
     return config
 
 
-def validate_config(config):
+def supabase_config_error(config):
+    """Return a safe configuration error without contacting Supabase."""
     missing = [k for k in ("SUPABASE_URL", "SUPABASE_KEY") if not config.get(k)]
     if missing:
-        raise RuntimeError("Missing required configuration: " + ", ".join(missing))
+        return "Missing required configuration: " + ", ".join(missing)
     parsed = urlparse(config["SUPABASE_URL"])
     local = parsed.hostname in ("localhost", "127.0.0.1")
     if not parsed.hostname or parsed.username or parsed.query or parsed.fragment or (
         parsed.scheme != "https" and not (parsed.scheme == "http" and local)
     ):
-        raise RuntimeError("SUPABASE_URL must be HTTPS (HTTP allowed only for local Supabase).")
+        return "SUPABASE_URL must be HTTPS (HTTP allowed only for local Supabase)."
     key = config["SUPABASE_KEY"]
     role = None
     try:
@@ -42,8 +48,13 @@ def validate_config(config):
         role = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4))).get("role")
     except (IndexError, ValueError, TypeError, AttributeError):
         pass
-    if key.startswith("sb_secret_") or role == "service_role" or key == config.get("SUPABASE_SERVICE_ROLE_KEY"):
-        raise RuntimeError("SUPABASE_KEY must be a publishable or anon key, not a privileged key.")
+    if key.startswith("sb_secret_") or role == "service_role":
+        return "SUPABASE_KEY must be a publishable or anon key, not a privileged key."
+    return None
+
+
+def validate_config(config):
+    """Validate process-wide security settings that must never be accepted."""
     if config.get("DEBUG") and config["ENVIRONMENT"] != "development":
         raise RuntimeError("FLASK_DEBUG is allowed only with FLASK_ENV=development.")
     if "*" in config["CORS_ORIGINS"]:

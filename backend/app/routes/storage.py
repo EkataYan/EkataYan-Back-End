@@ -1,6 +1,7 @@
 from flask import Blueprint, g, request
 
 from app.middleware.auth_middleware import authenticated, require_trip
+from app.repositories import ProfileRepository
 from app.services.storage_service import StorageService
 from app.utils.responses import APIError, success
 from app.utils.validators import identifier
@@ -19,7 +20,7 @@ def upload_file():
 @authenticated
 def profile_picture():
     result = StorageService(g.db).upload_private_image("profile-images", g.user_id, upload_file())
-    profile = g.db.update("profiles", {"id": g.user_id}, {"avatar_path": result["path"]})
+    profile = ProfileRepository(g.db).update(g.user_id, {"avatar_path": result["path"]})
     return success({"profile": profile, "upload": result}, 201)
 
 

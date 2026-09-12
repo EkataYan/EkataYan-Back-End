@@ -51,6 +51,10 @@ class FakeSupabase:
         row.update(data)
         return row
 
+    def delete(self, table, filters):
+        row = self.one(table, filters)
+        self.rows[table].remove(row)
+
     def rpc(self, name, data):
         return {"rpc": name, **data}
 

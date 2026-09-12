@@ -42,5 +42,10 @@ grant execute on function public.save_itinerary(uuid,jsonb) to authenticated;
 
 create index if not exists trip_members_trip_role_idx on public.trip_members(trip_id,role,user_id);
 create index if not exists expense_participants_user_idx on public.expense_participants(user_id,expense_id);
+create index if not exists expenses_paid_by_idx on public.expenses(paid_by);
+create index if not exists expenses_created_by_idx on public.expenses(created_by);
+create index if not exists group_messages_sender_idx on public.group_messages(sender_id);
+create index if not exists itineraries_generated_by_idx on public.itineraries(generated_by);
+create index if not exists notifications_trip_idx on public.notifications(trip_id) where trip_id is not null;
 create index if not exists itinerary_days_itinerary_idx on public.itinerary_days(itinerary_id,day_number);
 create index if not exists itinerary_activities_day_idx on public.itinerary_activities(itinerary_day_id,position);

@@ -7,6 +7,47 @@ def test_health_is_public(client):
     assert response.json == {"success": True, "status": "healthy"}
 
 
+def test_railway_health_is_public_and_dependency_free():
+    from app import create_app
+
+    app = create_app({
+        "TESTING": True,
+        "SUPABASE_URL": "",
+        "SUPABASE_KEY": "",
+        "AI_API_KEY": "",
+        "AI_BASE_URL": "",
+        "AI_MODEL": "",
+        "WEATHER_API_KEY": "",
+        "CORS_ORIGINS": [],
+    })
+
+    response = app.test_client().get("/health")
+    assert response.status_code == 200
+    assert response.json == {"success": True, "status": "healthy"}
+
+
+def test_missing_supabase_configuration_does_not_crash_worker_import():
+    from app import create_app
+
+    app = create_app({
+        "TESTING": True,
+        "SUPABASE_URL": "",
+        "SUPABASE_KEY": "",
+        "AI_API_KEY": "",
+        "AI_BASE_URL": "",
+        "AI_MODEL": "",
+        "WEATHER_API_KEY": "",
+        "CORS_ORIGINS": [],
+    })
+
+    response = app.test_client().get(
+        "/api/users/me",
+        headers={"Authorization": "Bearer valid-token"},
+    )
+    assert response.status_code == 503
+    assert response.json["error"]["code"] == "SUPABASE_NOT_CONFIGURED"
+
+
 def test_protected_endpoint_requires_bearer_token(client):
     response = client.get("/api/users/me")
     assert response.status_code == 401
@@ -113,6 +154,25 @@ def test_trip_creation_uses_authenticated_identity(client, auth_headers):
     assert response.status_code == 201
     assert response.json["success"] is True
     assert response.json["data"]["created_by"] == "00000000-0000-4000-8000-000000000001"
+
+
+def test_wishlist_creation_uses_authenticated_identity(client, auth_headers):
+    response = client.post("/api/wishlists", headers=auth_headers, json={"name": "Hill Country"})
+
+    assert response.status_code == 201
+    assert response.json["data"]["user_id"] == "00000000-0000-4000-8000-000000000001"
+    assert response.json["data"]["name"] == "Hill Country"
+
+
+def test_saved_place_validates_coordinate_pair(client, auth_headers):
+    wishlist = client.post("/api/wishlists", headers=auth_headers, json={"name": "Beaches"}).json["data"]
+    response = client.post(
+        f"/api/wishlists/{wishlist['id']}/places", headers=auth_headers,
+        json={"name": "Mirissa", "latitude": 5.9483},
+    )
+
+    assert response.status_code == 422
+    assert response.json["error"]["code"] == "INVALID_REQUEST"
 
 
 def test_cors_only_allows_configured_origin(client):

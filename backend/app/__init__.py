@@ -19,6 +19,7 @@ def create_app(config=None):
     from app.routes import register_routes
     register_routes(app)
 
+    @app.get("/health")
     @app.get("/api/health")
     def health():
         return jsonify(success=True, status="healthy")
