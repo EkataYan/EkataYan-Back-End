@@ -13,6 +13,9 @@ from app.utils.responses import APIError
 
 logger = logging.getLogger(__name__)
 
+
+APPLICATION_ITINERARY_SCHEMA = AiItineraryResponse.model_json_schema()
+
 SYSTEM_INSTRUCTION = """You are the itinerary engine for EkataYan, a Sri Lankan travel planning application.
 Generate realistic Sri Lankan travel itineraries using only the supplied trip preferences.
 Return valid JSON matching the provided schema, with no markdown, code fences, or commentary.
@@ -58,8 +61,7 @@ class AIService:
                     model=self.model,
                     input=prompt,
                     system_instruction=SYSTEM_INSTRUCTION,
-                    response_format={"type": "text", "mime_type": "application/json",
-                                     "schema": AiItineraryResponse.model_json_schema()},
+                    response_format={"type": "text", "mime_type": "application/json"},
                     store=False,
                 )
                 logger.info("Gemini response received attempt=%s", attempt + 1)
@@ -70,18 +72,47 @@ class AIService:
                 return result
             except ValidationError as error:
                 last_error = error
-                logger.warning("Gemini itinerary schema validation failed attempt=%s", attempt + 1)
+                issues = [
+                    {"path": ".".join(str(part) for part in item["loc"]), "message": item["msg"]}
+                    for item in error.errors(include_input=False, include_url=False)[:20]
+                ]
+                logger.warning("Gemini itinerary schema validation failed attempt=%s issues=%s",
+                               attempt + 1, issues)
             except (TimeoutError, errors.ServerError) as error:
-                logger.warning("Gemini request unavailable error_type=%s", type(error).__name__)
+                logger.exception(
+                    "Gemini SDK request unavailable source=gemini_sdk class=%s message=%s status=%s model=%s",
+                    type(error).__name__, str(error),
+                    getattr(error, "status_code", getattr(error, "code", None)), self.model,
+                )
                 if getattr(error, "code", None) in (408, 504) or isinstance(error, TimeoutError):
                     raise APIError("ai_timeout", "Itinerary generation took too long. Please try again.", 504) from None
                 raise APIError("ai_unavailable", "AI itinerary generation is temporarily unavailable.", 503) from None
             except errors.APIError as error:
-                logger.warning("Gemini request failed status=%s", getattr(error, "code", None))
-                raise APIError("ai_generation_failed", "We couldn't generate your itinerary.", 502) from None
+                logger.exception(
+                    "Gemini SDK request failed source=gemini_sdk class=%s message=%s status=%s model=%s",
+                    type(error).__name__, str(error),
+                    getattr(error, "status_code", getattr(error, "code", None)), self.model,
+                )
+                raise APIError("ai_request_failed", "The AI itinerary request could not be processed.", 502) from None
             except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
                 last_error = error
                 logger.warning("Gemini response parsing failed attempt=%s error_type=%s", attempt + 1, type(error).__name__)
+            except Exception as error:
+                # Interactions/GAOS exceptions (including BadRequestError) are not
+                # subclasses of google.genai.errors.APIError in google-genai 2.23.
+                module = type(error).__module__
+                if module.startswith("google.genai"):
+                    status = getattr(error, "status_code", getattr(error, "code", None))
+                    logger.exception(
+                        "Gemini SDK request failed source=gemini_sdk class=%s message=%s status=%s model=%s",
+                        type(error).__name__, str(error), status, self.model,
+                    )
+                    if status in (408, 504):
+                        raise APIError("ai_timeout", "Itinerary generation took too long. Please try again.", 504) from None
+                    if status == 400:
+                        raise APIError("ai_request_failed", "The AI itinerary request could not be processed.", 502) from None
+                    raise APIError("ai_unavailable", "AI itinerary generation is temporarily unavailable.", 503) from None
+                raise
         logger.error("Gemini itinerary rejected after retry duration_ms=%s error_type=%s",
                      round((time.monotonic() - started) * 1000), type(last_error).__name__)
         raise APIError("ai_generation_failed", "We couldn't generate your itinerary.", 502)
@@ -93,7 +124,10 @@ class AIService:
             "Create one complete itinerary from this normalized planner request. The backend-calculated "
             "duration_days and supplied dates, traveller type, and traveller count are immutable. Activity IDs "
             "must be unique strings. Include inter-city transfers in transport_from_previous and "
-            "travel_time_minutes.\nPlanner request:\n" + json.dumps(normalized, separators=(",", ":"))
+            "travel_time_minutes. Every nested field in the response schema is required unless nullable.\n"
+            "Required response JSON schema:\n"
+            + json.dumps(APPLICATION_ITINERARY_SCHEMA, separators=(",", ":"))
+            + "\nPlanner request:\n" + json.dumps(normalized, separators=(",", ":"))
         )
         if modification:
             prompt += "\nModify the supplied itinerary while preserving immutable facts:\n" + json.dumps(

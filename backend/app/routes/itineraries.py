@@ -1,3 +1,4 @@
+import json
 import logging
 
 from flask import Blueprint, current_app, g, request
@@ -17,7 +18,16 @@ def _planner_payload(model=PlannerRequest):
     if not request.is_json:
         raise APIError("validation_error", "Content-Type must be application/json.", 415)
     try:
-        return model.model_validate(request.get_json())
+        payload = model.model_validate(request.get_json())
+        if isinstance(payload, PlannerRequest):
+            safe_payload = payload.model_dump(mode="json")
+            special_requests = safe_payload.pop("special_requests", None)
+            safe_payload["special_requests"] = {
+                "present": bool(special_requests), "length": len(special_requests or "")
+            }
+            logger.info("Planner payload normalized source=flask_request_validation payload=%s",
+                        json.dumps(safe_payload, separators=(",", ":")))
+        return payload
     except ValidationError as error:
         locations = {str(item["loc"][0]) for item in error.errors() if item["loc"]}
         if "destinations" in locations or any("destination" in item["msg"].lower() for item in error.errors()):
@@ -28,6 +38,10 @@ def _planner_payload(model=PlannerRequest):
             message = "Traveller count must be greater than zero."
         else:
             message = "Please check your trip information."
+        logger.warning(
+            "Planner validation failed source=flask_request_validation class=%s message=%s fields=%s",
+            type(error).__name__, message, sorted(locations), exc_info=True,
+        )
         raise APIError("validation_error", message, 400) from None
 
 
