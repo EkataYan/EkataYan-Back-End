@@ -6,15 +6,16 @@ from urllib.parse import urlparse
 from dotenv import load_dotenv
 from pathlib import Path
 
-AI_CONFIG_KEYS = ("AI_API_KEY", "AI_BASE_URL", "AI_MODEL")
+AI_CONFIG_KEYS = ("GEMINI_API_KEY",)
 
 
 def load_config():
     load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
-    names = ("SUPABASE_URL", "AI_PROVIDER",
-             "AI_API_KEY", "AI_BASE_URL", "AI_MODEL", "WEATHER_API_KEY", "WEATHER_PROVIDER")
+    names = ("SUPABASE_URL", "GEMINI_API_KEY", "GEMINI_MODEL", "GEMINI_TIMEOUT_SECONDS",
+             "WEATHER_API_KEY", "WEATHER_PROVIDER")
     config = {name: os.getenv(name, "").strip() for name in names}
-    config["AI_PROVIDER"] = config["AI_PROVIDER"] or "openai_compatible"
+    config["GEMINI_MODEL"] = config["GEMINI_MODEL"] or "gemini-3.8-flash"
+    config["GEMINI_TIMEOUT_SECONDS"] = config["GEMINI_TIMEOUT_SECONDS"] or "60"
     config["WEATHER_PROVIDER"] = config["WEATHER_PROVIDER"] or "weatherapi"
     config["SUPABASE_KEY"] = next((os.getenv(name, "").strip() for name in (
         "SUPABASE_KEY", "SUPABASE_PUBLISHABLE_KEY", "SUPABASE_ANON_KEY"

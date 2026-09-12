@@ -64,7 +64,7 @@ def app():
     from app import create_app
     app = create_app({"TESTING": True, "SUPABASE_URL": "https://example.supabase.co", "SUPABASE_KEY": "test-key",
                       "SUPABASE_SERVICE_ROLE_KEY": "", "CORS_ORIGINS": ["http://localhost:3000"],
-                      "AI_API_KEY": "", "AI_BASE_URL": "", "AI_MODEL": "",
+                      "GEMINI_API_KEY": "",
                       "SUPABASE_FACTORY": FakeSupabase})
     return app
 
