@@ -1,4 +1,7 @@
+from io import BytesIO
+
 import pytest
+from PIL import Image
 
 
 def test_health_is_public(client):
@@ -137,6 +140,71 @@ def test_profile_patch_cannot_update_auth_owned_email(client, auth_headers):
     assert response.json["error"]["code"] == "INVALID_REQUEST"
     profile = client.get("/api/users/me", headers=auth_headers)
     assert profile.json["data"]["email"] == "test@example.com"
+
+
+def test_profile_picture_upload_persists_storage_path_on_profile(auth_headers):
+    from app import create_app
+    from conftest import FakeSupabase
+
+    class StorageUploadFake(FakeSupabase):
+        uploaded = None
+
+        def request(self, method, path, **kwargs):
+            if method == "POST" and path.startswith("/storage/v1/object/profile-images/"):
+                StorageUploadFake.uploaded = (path, kwargs["content"], kwargs["headers"])
+                return {"Key": path}
+            return None
+
+    image = BytesIO()
+    Image.new("RGB", (24, 24), "#238DD1").save(image, format="PNG")
+    image.seek(0)
+    app = create_app({"TESTING": True, "SUPABASE_URL": "https://example.supabase.co", "SUPABASE_KEY": "test-key",
+                      "SUPABASE_SERVICE_ROLE_KEY": "", "CORS_ORIGINS": [], "AI_API_KEY": "", "AI_BASE_URL": "",
+                      "AI_MODEL": "", "SUPABASE_FACTORY": StorageUploadFake})
+
+    response = app.test_client().post(
+        "/api/storage/profile-picture",
+        headers=auth_headers,
+        data={"file": (image, "avatar.png")},
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 201
+    avatar_path = response.json["data"]["profile"]["avatar_path"]
+    assert avatar_path.startswith("00000000-0000-4000-8000-000000000001/")
+    assert avatar_path.endswith(".png")
+    assert response.json["data"]["upload"]["path"] == avatar_path
+    assert StorageUploadFake.uploaded[2]["Content-Type"] == "image/png"
+
+
+def test_profile_picture_download_is_authenticated_and_account_scoped(auth_headers):
+    from app import create_app
+    from conftest import FakeSupabase
+
+    image = BytesIO()
+    Image.new("RGB", (12, 12), "#238DD1").save(image, format="JPEG")
+    image_bytes = image.getvalue()
+
+    class StorageDownloadFake(FakeSupabase):
+        def __init__(self, config, token):
+            super().__init__(config, token)
+            self.rows["profiles"][0]["avatar_path"] = f"{self.user['id']}/avatar.jpg"
+
+        def request_binary(self, method, path, **_kwargs):
+            assert method == "GET"
+            assert path == f"/storage/v1/object/authenticated/profile-images/{self.user['id']}/avatar.jpg"
+            return image_bytes, "image/jpeg"
+
+    app = create_app({"TESTING": True, "SUPABASE_URL": "https://example.supabase.co", "SUPABASE_KEY": "test-key",
+                      "SUPABASE_SERVICE_ROLE_KEY": "", "CORS_ORIGINS": [], "AI_API_KEY": "", "AI_BASE_URL": "",
+                      "AI_MODEL": "", "SUPABASE_FACTORY": StorageDownloadFake})
+
+    response = app.test_client().get("/api/storage/profile-picture", headers=auth_headers)
+
+    assert response.status_code == 200
+    assert response.content_type == "image/jpeg"
+    assert response.data == image_bytes
+    assert app.test_client().get("/api/storage/profile-picture").status_code == 401
 
 
 def test_invalid_json_has_standard_error(client, auth_headers):

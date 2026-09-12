@@ -110,7 +110,7 @@ Protected endpoints:
 - `GET /api/notifications`; `PUT /api/notifications/<notification_id>/read`
 - `GET`/`POST /api/wishlists`; `GET`/`PATCH`/`DELETE /api/wishlists/<wishlist_id>`
 - `POST /api/wishlists/<wishlist_id>/places`; `DELETE /api/wishlists/<wishlist_id>/places/<place_id>`
-- `POST /api/storage/profile-picture`; `POST /api/trips/<trip_id>/images` (multipart field: `file`)
+- `GET`/`POST /api/storage/profile-picture`; `POST /api/trips/<trip_id>/images` (multipart field: `file`)
 
 All UUIDs are server-validated. Clients never set a trip creator or message sender. Trip owners manage membership and deletion; trip admins edit trips and generate itineraries; members can access trip content, send messages and record expenses. Money is validated as decimal and stored as PostgreSQL `numeric(14,2)`.
 
