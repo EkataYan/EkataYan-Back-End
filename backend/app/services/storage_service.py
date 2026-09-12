@@ -34,3 +34,23 @@ class StorageService:
         self.db.request("POST", f"/storage/v1/object/{bucket}/{path}", content=raw,
                         headers={"Content-Type": mime, "x-upsert": "false"})
         return {"bucket": bucket, "path": path}
+
+    def download_private_image(self, bucket, folder, path):
+        normalized = PurePosixPath(path)
+        if normalized.is_absolute() or ".." in normalized.parts or len(normalized.parts) < 2 \
+                or normalized.parts[0] != folder:
+            raise APIError("NOT_FOUND", "Profile picture was not found.", 404)
+        raw, mime = self.db.request_binary(
+            "GET",
+            f"/storage/v1/object/authenticated/{bucket}/{normalized}",
+        )
+        if not raw or mime not in {item[1] for item in self.ALLOWED.values()}:
+            raise APIError("UPSTREAM_ERROR", "Stored profile picture is invalid.", 502)
+        return raw, mime
+
+    def delete_private_image(self, bucket, folder, path):
+        normalized = PurePosixPath(path)
+        if normalized.is_absolute() or ".." in normalized.parts or len(normalized.parts) < 2 \
+                or normalized.parts[0] != folder:
+            return
+        self.db.request("DELETE", f"/storage/v1/object/{bucket}/{normalized}")

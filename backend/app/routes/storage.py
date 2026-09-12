@@ -1,4 +1,4 @@
-from flask import Blueprint, g, request
+from flask import Blueprint, Response, current_app, g, request
 
 from app.middleware.auth_middleware import authenticated, require_trip
 from app.repositories import ProfileRepository
@@ -19,9 +19,28 @@ def upload_file():
 @bp.post("/storage/profile-picture")
 @authenticated
 def profile_picture():
-    result = StorageService(g.db).upload_private_image("profile-images", g.user_id, upload_file())
-    profile = ProfileRepository(g.db).update(g.user_id, {"avatar_path": result["path"]})
+    repository = ProfileRepository(g.db)
+    previous_path = repository.get(g.user_id).get("avatar_path")
+    storage = StorageService(g.db)
+    result = storage.upload_private_image("profile-images", g.user_id, upload_file())
+    profile = repository.update(g.user_id, {"avatar_path": result["path"]})
+    if previous_path and previous_path != result["path"]:
+        try:
+            storage.delete_private_image("profile-images", g.user_id, previous_path)
+        except APIError:
+            current_app.logger.warning("Previous profile image cleanup failed for user uuid=%s", g.user_id)
     return success({"profile": profile, "upload": result}, 201)
+
+
+@bp.get("/storage/profile-picture")
+@authenticated
+def get_profile_picture():
+    profile = ProfileRepository(g.db).get(g.user_id)
+    path = profile.get("avatar_path")
+    if not path:
+        raise APIError("NOT_FOUND", "Profile picture was not found.", 404)
+    raw, mime = StorageService(g.db).download_private_image("profile-images", g.user_id, path)
+    return Response(raw, status=200, content_type=mime)
 
 
 @bp.post("/trips/<trip_id>/images")

@@ -34,6 +34,19 @@ class SupabaseService:
         self.client.close()
 
     def request(self, method, path, **kwargs):
+        response = self._request_response(method, path, **kwargs)
+        if not response.content:
+            return None
+        try:
+            return response.json()
+        except ValueError:
+            raise APIError("UPSTREAM_ERROR", "Supabase returned an invalid response.", 502) from None
+
+    def request_binary(self, method, path, **kwargs):
+        response = self._request_response(method, path, **kwargs)
+        return response.content, response.headers.get("content-type", "application/octet-stream").split(";", 1)[0]
+
+    def _request_response(self, method, path, **kwargs):
         try:
             response = self.client.request(method, path, **kwargs)
         except httpx.RequestError as error:
@@ -61,12 +74,7 @@ class SupabaseService:
             if response.status_code == 429:
                 raise APIError("RATE_LIMITED", "Too many requests. Try again later.", 429)
             raise APIError("UPSTREAM_ERROR", "Supabase could not complete the request.", 502)
-        if not response.content:
-            return None
-        try:
-            return response.json()
-        except ValueError:
-            raise APIError("UPSTREAM_ERROR", "Supabase returned an invalid response.", 502) from None
+        return response
 
     def get_user(self):
         try:
