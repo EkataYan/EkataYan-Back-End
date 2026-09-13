@@ -1,5 +1,6 @@
 import json
 import logging
+import time
 
 from flask import Blueprint, current_app, g, request
 from pydantic import ValidationError
@@ -73,11 +74,23 @@ def _persistence_payload(itinerary):
 @bp.post("/itineraries/preview")
 @authenticated
 def preview():
+    request_started = time.monotonic()
     logger.info("Itinerary preview request received user_id=%s", g.user_id)
     service = _ai_service()
+    parsing_started = time.monotonic()
     planner = _planner_payload()
+    parsing_ms = round((time.monotonic() - parsing_started) * 1000)
+    generation_started = time.monotonic()
     itinerary = service.generate_itinerary(planner)
-    return success(itinerary.model_dump(mode="json"), 200)
+    generation_ms = round((time.monotonic() - generation_started) * 1000)
+    response_started = time.monotonic()
+    response = success(itinerary.model_dump(mode="json"), 200)
+    response_ms = round((time.monotonic() - response_started) * 1000)
+    logger.info(
+        "Itinerary preview timing request_parse_ms=%s generation_ms=%s backend_response_ms=%s total_ms=%s",
+        parsing_ms, generation_ms, response_ms, round((time.monotonic() - request_started) * 1000),
+    )
+    return response
 
 
 @bp.post("/itineraries/modify")
@@ -118,12 +131,12 @@ def save_preview():
         "planner_context": planner.model_dump(mode="json"),
         "created_by": g.user_id,
     }
-    trip = TripRepository(g.db).create(trip_data)
-    trip_id = str(trip["id"])
     structured = itinerary.model_dump(mode="json")
     persistence = _persistence_payload(itinerary)
-    saved = ItineraryRepository(g.db).save(trip_id, persistence)
-    complete = ItineraryRepository(g.db).get(saved["id"])
+    repository = ItineraryRepository(g.db)
+    saved = repository.save_ai_trip(trip_data, persistence)
+    trip = saved["trip"]
+    complete = repository.get(saved["itinerary_id"])
     return success({"trip": trip, "itinerary": complete, "structured_itinerary": structured}, 201)
 
 

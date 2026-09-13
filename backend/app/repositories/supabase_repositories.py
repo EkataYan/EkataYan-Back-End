@@ -32,6 +32,8 @@ class ItineraryRepository:
     GRAPH = "*,itinerary_days(*,itinerary_activities(*))"
     def __init__(self, db): self.db = db
     def save(self, trip_id, data): return self.db.rpc("save_itinerary", {"p_trip_id": trip_id, "p_data": data})
+    def save_ai_trip(self, trip, itinerary):
+        return self.db.rpc("save_ai_trip", {"p_trip": trip, "p_itinerary": itinerary})
     def get(self, itinerary_id): return self.db.one("itineraries", {"id": itinerary_id}, select=self.GRAPH)
     def list(self, trip_id): return self.db.select("itineraries", {"trip_id": trip_id}, select=self.GRAPH)
 
