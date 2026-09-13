@@ -345,6 +345,13 @@ def test_weather_accepts_profile_city_and_normalizes_provider_data(client, auth_
     assert response.json["data"] | {"location": "Kandy", "humidity": 81, "wind_kph": 18.5, "sunrise": "06:01 AM"} == response.json["data"]
     assert provider_call["params"]["q"] == "Kandy"
 
+    response = app.test_client().get(
+        "/api/weather?latitude=6.9271&longitude=79.8612&date=2026-10-01",
+        headers=auth_headers,
+    )
+    assert response.status_code == 200
+    assert provider_call["params"]["q"] == "6.9271,79.8612"
+
 
 def test_expense_delete_uses_authorized_atomic_rpc(client, auth_headers):
     from conftest import FakeSupabase
@@ -575,3 +582,40 @@ def test_point_lookup_does_not_order_by_columns_absent_from_composite_key_tables
 
     assert row["role"] == "member"
     assert "order" not in captured["params"]
+
+
+def test_equal_expense_contract_delegates_atomic_split_to_database(auth_headers):
+    from app import create_app
+    from conftest import FakeSupabase
+
+    trip_id = "00000000-0000-4000-8000-000000000020"
+    user_id = "00000000-0000-4000-8000-000000000001"
+
+    class ExpenseFake(FakeSupabase):
+        calls = []
+        def __init__(self, config, token):
+            super().__init__(config, token)
+            self.rows["trips"] = [{"id": trip_id, "created_by": user_id}]
+
+        def rpc(self, name, data):
+            ExpenseFake.calls.append((name, data))
+            if name == "create_equal_expense":
+                return {"id": "00000000-0000-4000-8000-000000000040", **data["p_data"]}
+            if name == "list_trip_expenses_public": return []
+            if name == "get_trip_expense_balances": return {"trip_id": trip_id, "balances": []}
+            return super().rpc(name, data)
+
+    app = create_app({"TESTING": True, "SUPABASE_URL": "https://example.supabase.co", "SUPABASE_KEY": "test-key",
+                      "SUPABASE_SERVICE_ROLE_KEY": "", "CORS_ORIGINS": [], "GEMINI_API_KEY": "",
+                      "SUPABASE_FACTORY": ExpenseFake})
+    api = app.test_client()
+    response = api.post(f"/api/trips/{trip_id}/expenses", headers=auth_headers, json={
+        "title": "Hotel", "amount": "10000.00", "category": "Accommodation", "paid_by": user_id,
+        "participant_ids": [user_id], "expense_date": "2026-09-13", "notes": "",
+    })
+    assert response.status_code == 201
+    call = next(data for name, data in ExpenseFake.calls if name == "create_equal_expense")
+    assert call["p_data"]["participant_ids"] == [user_id]
+    assert "participants" not in call["p_data"]
+    assert api.get(f"/api/trips/{trip_id}/expenses", headers=auth_headers).status_code == 200
+    assert api.get(f"/api/trips/{trip_id}/expense-balances", headers=auth_headers).status_code == 200
