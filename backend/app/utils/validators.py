@@ -12,6 +12,7 @@ from app.utils.responses import APIError
 Text = Annotated[str, Field(min_length=1, max_length=160)]
 Money = Annotated[Decimal, Field(ge=0, max_digits=14, decimal_places=2, allow_inf_nan=False)]
 Tags = Annotated[list[Text], Field(max_length=30)]
+Username = Annotated[str, Field(min_length=3, max_length=20, pattern=r"^[a-z0-9_]+$")]
 
 
 class Input(BaseModel):
@@ -27,6 +28,7 @@ class ProfileInput(Input):
 
 
 class ProfilePatchInput(Input):
+    username: Username | None = None
     display_name: Text | None = None
     bio: Annotated[str, Field(max_length=1000)] | None = None
     home_city: Annotated[str, Field(max_length=160)] | None = None
@@ -39,6 +41,13 @@ class ProfilePatchInput(Input):
     def valid_phone(cls, value):
         if value is not None and value and not re.fullmatch(r"\+?[0-9 ()-]{7,32}", value):
             raise ValueError("phone contains invalid characters or has an invalid length")
+        return value
+
+    @field_validator("username", mode="before")
+    @classmethod
+    def normalize_username(cls, value):
+        if isinstance(value, str):
+            return value.strip().removeprefix("@").lower()
         return value
 
     @model_validator(mode="after")

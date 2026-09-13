@@ -1,3 +1,5 @@
+import logging
+
 from flask import Blueprint, g
 from app.middleware.auth_middleware import authenticated, require_trip
 from app.repositories import ItineraryRepository, TripRepository
@@ -5,6 +7,7 @@ from app.utils.responses import success
 from app.utils.validators import TripInput, identifier, pagination, parse
 
 bp = Blueprint("trips", __name__)
+logger = logging.getLogger(__name__)
 
 
 @bp.post("/trips")
@@ -32,10 +35,13 @@ def get_trip(trip_id):
 @authenticated
 def get_trip_details(trip_id):
     trip_id = identifier(trip_id)
+    logger.info("Trip details request trip_id=%s authenticated_user_id=%s", trip_id, g.user_id)
     trip = require_trip(trip_id)
     itineraries = ItineraryRepository(g.db).list(trip_id)
     itinerary = itineraries[0] if itineraries else None
     structured = itinerary.get("structured_data") if itinerary else None
+    logger.info("Trip details response trip_id=%s authenticated_user_id=%s itinerary_found=%s",
+                trip_id, g.user_id, itinerary is not None)
     return success({"trip": trip, "itinerary": itinerary, "structured_itinerary": structured})
 
 

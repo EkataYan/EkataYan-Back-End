@@ -90,12 +90,17 @@ class SupabaseService:
         return user
 
     def select(self, table, filters=None, select="*", limit=50, offset=0, order="created_at.desc,id.desc"):
-        params = {"select": select, "limit": str(limit), "offset": str(offset), "order": order}
+        params = {"select": select, "limit": str(limit), "offset": str(offset)}
+        if order:
+            params["order"] = order
         params.update({k: f"eq.{v}" for k, v in (filters or {}).items()})
         return self.request("GET", f"/rest/v1/{table}", params=params)
 
     def one(self, table, filters, select="*"):
-        rows = self.select(table, filters, select, limit=1)
+        # A point lookup must not assume every table has the list-view
+        # ``created_at`` and ``id`` columns. For example, trip_members uses a
+        # composite primary key and ``joined_at``.
+        rows = self.select(table, filters, select, limit=1, order=None)
         if not rows:
             raise APIError("NOT_FOUND", "Resource not found or not accessible.", 404)
         return rows[0]

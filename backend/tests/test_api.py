@@ -140,6 +140,55 @@ def test_profile_patch_cannot_update_auth_owned_email(client, auth_headers):
     assert profile.json["data"]["email"] == "test@example.com"
 
 
+def test_username_update_is_normalized(client, auth_headers):
+    response = client.patch("/api/users/me", headers=auth_headers, json={"username": "@New_Name"})
+    assert response.status_code == 200
+    assert response.json["data"]["username"] == "new_name"
+
+
+def test_user_search_returns_only_public_fields(client, auth_headers):
+    response = client.get("/api/users/search?q=test", headers=auth_headers)
+    assert response.status_code == 200
+    assert response.json["data"] == [{
+        "id": "00000000-0000-4000-8000-000000000001", "username": "test482913",
+        "display_name": "Test", "avatar_url": None,
+    }]
+    assert "email" not in response.json["data"][0]
+    assert "phone" not in response.json["data"][0]
+    assert "home_city" not in response.json["data"][0]
+
+
+def test_user_search_and_availability_require_authentication(client):
+    assert client.get("/api/users/search?q=test").status_code == 401
+    assert client.get("/api/users/username-availability?username=test123").status_code == 401
+
+
+def test_username_availability_validates_format(client, auth_headers):
+    invalid = client.get("/api/users/username-availability?username=Bad-Name", headers=auth_headers)
+    assert invalid.status_code == 200
+    assert invalid.json["data"] == {"username": "bad-name", "available": False, "valid": False}
+
+
+def test_duplicate_username_update_returns_clear_conflict(auth_headers):
+    from conftest import FakeSupabase
+    from app import create_app
+
+    class DuplicateUsernameFake(FakeSupabase):
+        def __init__(self, config, token):
+            super().__init__(config, token)
+            self.rows["profiles"].append({
+                "id": "00000000-0000-4000-8000-000000000002", "username": "already_taken",
+                "display_name": "Another User", "avatar_url": None,
+            })
+
+    app = create_app({"TESTING": True, "SUPABASE_URL": "https://example.supabase.co", "SUPABASE_KEY": "test-key",
+                      "SUPABASE_SERVICE_ROLE_KEY": "", "CORS_ORIGINS": [], "GEMINI_API_KEY": "",
+                      "SUPABASE_FACTORY": DuplicateUsernameFake})
+    response = app.test_client().patch("/api/users/me", headers=auth_headers, json={"username": "already_taken"})
+    assert response.status_code == 409
+    assert response.json["error"] == {"code": "USERNAME_TAKEN", "message": "That username is already taken."}
+
+
 def test_profile_picture_upload_persists_storage_path_on_profile(auth_headers):
     from app import create_app
     from conftest import FakeSupabase
@@ -440,3 +489,89 @@ def test_gaos_bad_request_maps_to_clean_502():
         service.generate_itinerary(planner_payload())
     assert raised.value.status == 502
     assert raised.value.code == "ai_request_failed"
+
+
+def test_trip_invitation_routes_use_authenticated_atomic_rpcs(auth_headers):
+    from app import create_app
+    from conftest import FakeSupabase
+
+    trip_id = "00000000-0000-4000-8000-000000000020"
+    invite_id = "00000000-0000-4000-8000-000000000030"
+    target_id = "00000000-0000-4000-8000-000000000002"
+
+    class InvitationFake(FakeSupabase):
+        calls = []
+        def __init__(self, config, token):
+            super().__init__(config, token)
+            self.rows["trips"] = [{"id": trip_id, "created_by": self.user["id"]}]
+            self.rows["trip_members"] = [{"trip_id": trip_id, "user_id": self.user["id"], "role": "owner"}]
+
+        def rpc(self, name, data):
+            InvitationFake.calls.append((name, data))
+            if name == "list_my_trip_invites": return []
+            return {"id": invite_id, "status": "accepted" if data.get("p_accept") else "pending"}
+
+    app = create_app({"TESTING": True, "SUPABASE_URL": "https://example.supabase.co", "SUPABASE_KEY": "test-key",
+                      "SUPABASE_SERVICE_ROLE_KEY": "", "CORS_ORIGINS": [], "GEMINI_API_KEY": "",
+                      "SUPABASE_FACTORY": InvitationFake})
+    api = app.test_client()
+
+    assert api.post(f"/api/trips/{trip_id}/invites", json={"user_id": target_id}).status_code == 401
+    assert api.post(f"/api/trips/{trip_id}/invites", headers=auth_headers,
+                    json={"user_id": target_id}).status_code == 201
+    assert api.get("/api/trip-invites/me", headers=auth_headers).status_code == 200
+    assert api.post(f"/api/trip-invites/{invite_id}/accept", headers=auth_headers).status_code == 200
+    assert api.post(f"/api/trip-invites/{invite_id}/decline", headers=auth_headers).status_code == 200
+    assert ("create_trip_invite", {"p_trip_id": trip_id, "p_invited_user_id": target_id}) in InvitationFake.calls
+    assert ("respond_trip_invite", {"p_invite_id": invite_id, "p_accept": True}) in InvitationFake.calls
+    assert ("respond_trip_invite", {"p_invite_id": invite_id, "p_accept": False}) in InvitationFake.calls
+
+
+def test_admin_cannot_create_trip_invite(auth_headers):
+    from app import create_app
+    from conftest import FakeSupabase
+
+    trip_id = "00000000-0000-4000-8000-000000000020"
+    target_id = "00000000-0000-4000-8000-000000000002"
+
+    class AdminFake(FakeSupabase):
+        rpc_called = False
+
+        def __init__(self, config, token):
+            super().__init__(config, token)
+            self.rows["trips"] = [{"id": trip_id, "created_by": "00000000-0000-4000-8000-000000000099"}]
+            self.rows["trip_members"] = [{"trip_id": trip_id, "user_id": self.user["id"], "role": "admin"}]
+
+        def rpc(self, name, data):
+            AdminFake.rpc_called = True
+            return super().rpc(name, data)
+
+    app = create_app({"TESTING": True, "SUPABASE_URL": "https://example.supabase.co", "SUPABASE_KEY": "test-key",
+                      "SUPABASE_SERVICE_ROLE_KEY": "", "CORS_ORIGINS": [], "GEMINI_API_KEY": "",
+                      "SUPABASE_FACTORY": AdminFake})
+    response = app.test_client().post(
+        f"/api/trips/{trip_id}/invites", headers=auth_headers, json={"user_id": target_id}
+    )
+
+    assert response.status_code == 403
+    assert AdminFake.rpc_called is False
+
+
+def test_point_lookup_does_not_order_by_columns_absent_from_composite_key_tables():
+    from app.services.supabase_service import SupabaseService
+
+    service = SupabaseService({"SUPABASE_URL": "https://example.supabase.co", "SUPABASE_KEY": "test-key"}, "token")
+    captured = {}
+
+    def request(method, path, **kwargs):
+        captured.update({"method": method, "path": path, **kwargs})
+        return [{"trip_id": "trip", "user_id": "user", "role": "member"}]
+
+    service.request = request
+    try:
+        row = service.one("trip_members", {"trip_id": "trip", "user_id": "user"})
+    finally:
+        service.close()
+
+    assert row["role"] == "member"
+    assert "order" not in captured["params"]

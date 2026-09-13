@@ -9,6 +9,10 @@ class ProfileRepository:
     def __init__(self, db): self.db = db
     def get(self, user_id): return self.db.one("profiles", {"id": user_id})
     def update(self, user_id, data): return self.db.update("profiles", {"id": user_id}, data)
+    def search(self, query, limit=20):
+        return self.db.rpc("search_public_profiles", {"p_query": query, "p_limit": limit})
+    def username_available(self, username):
+        return self.db.rpc("is_username_available", {"p_username": username})
 
 
 class TripRepository:
@@ -26,6 +30,17 @@ class MembershipRepository:
     def get(self, trip_id, user_id): return self.db.one("trip_members", {"trip_id": trip_id, "user_id": user_id})
     def add(self, data): return self.db.insert("trip_members", data)
     def remove(self, trip_id, user_id): return self.db.delete("trip_members", {"trip_id": trip_id, "user_id": user_id})
+    def public_list(self, trip_id): return self.db.rpc("list_trip_members_public", {"p_trip_id": trip_id})
+    def remove_authorized(self, trip_id, user_id): return self.db.rpc("remove_trip_member", {"p_trip_id": trip_id, "p_user_id": user_id})
+    def leave(self, trip_id): return self.db.rpc("leave_trip", {"p_trip_id": trip_id})
+
+
+class InvitationRepository:
+    def __init__(self, db): self.db = db
+    def create(self, trip_id, user_id): return self.db.rpc("create_trip_invite", {"p_trip_id": trip_id, "p_invited_user_id": user_id})
+    def mine(self): return self.db.rpc("list_my_trip_invites", {})
+    def respond(self, invite_id, accept): return self.db.rpc("respond_trip_invite", {"p_invite_id": invite_id, "p_accept": accept})
+    def search_candidates(self, trip_id, query): return self.db.rpc("search_trip_candidates", {"p_trip_id": trip_id, "p_query": query})
 
 
 class ItineraryRepository:
