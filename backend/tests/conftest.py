@@ -14,6 +14,8 @@ class FakeSupabase:
             "id": self.user["id"],
             "email": self.user["email"],
             "display_name": "Test",
+            "username": "test482913",
+            "avatar_url": None,
             "bio": "Original bio",
             "home_city": "Kandy",
             "language": "en",
@@ -47,6 +49,12 @@ class FakeSupabase:
         return rows[0]
 
     def update(self, table, filters, data):
+        if table == "profiles" and "username" in data and any(
+            row.get("username", "").lower() == data["username"].lower() and row.get("id") != filters.get("id")
+            for row in self.rows[table]
+        ):
+            from app.utils.responses import APIError
+            raise APIError("CONFLICT", "The record conflicts with existing data or references.", 409)
         row = self.one(table, filters)
         row.update(data)
         return row
@@ -56,6 +64,15 @@ class FakeSupabase:
         self.rows[table].remove(row)
 
     def rpc(self, name, data):
+        if name == "search_public_profiles":
+            query = data["p_query"].lower()
+            return [{key: row.get(key) for key in ("id", "username", "display_name", "avatar_url")}
+                    for row in self.rows["profiles"]
+                    if row.get("username", "").lower().startswith(query) or query in row.get("display_name", "").lower()]
+        if name == "is_username_available":
+            username = data["p_username"].lower()
+            return not any(row.get("username", "").lower() == username and row["id"] != self.user["id"]
+                           for row in self.rows["profiles"])
         if name == "save_ai_trip":
             trip = self.insert("trips", data["p_trip"] | {"source": "ai"})
             itinerary = self.insert("itineraries", data["p_itinerary"] | {"trip_id": trip["id"]})

@@ -2,6 +2,7 @@
 
 from app.repositories.supabase_repositories import (
     ExpenseRepository,
+    InvitationRepository,
     ItineraryRepository,
     MembershipRepository,
     NotificationRepository,
@@ -11,6 +12,6 @@ from app.repositories.supabase_repositories import (
 )
 
 __all__ = [
-    "ExpenseRepository", "ItineraryRepository", "MembershipRepository",
+    "ExpenseRepository", "InvitationRepository", "ItineraryRepository", "MembershipRepository",
     "NotificationRepository", "ProfileRepository", "TripRepository", "WishlistRepository",
 ]

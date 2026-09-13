@@ -12,8 +12,7 @@ bp = Blueprint("groups", __name__)
 def members(trip_id):
     trip_id = identifier(trip_id)
     require_trip(trip_id)
-    page = pagination()
-    return success(MembershipRepository(g.db).list(trip_id, page), pagination=page)
+    return success(MembershipRepository(g.db).public_list(trip_id))
 
 
 @bp.post("/trips/<trip_id>/members")
@@ -30,8 +29,15 @@ def add(trip_id):
 @authenticated
 def remove(trip_id, user_id):
     trip_id, user_id = identifier(trip_id), identifier(user_id)
-    trip = require_trip(trip_id, owner=True)
-    if user_id == trip["created_by"]:
-        raise APIError("CONFLICT", "The trip owner cannot be removed.", 409)
-    MembershipRepository(g.db).remove(trip_id, user_id)
+    require_trip(trip_id)
+    MembershipRepository(g.db).remove_authorized(trip_id, user_id)
     return success({"deleted": True})
+
+
+@bp.post("/trips/<trip_id>/leave")
+@authenticated
+def leave(trip_id):
+    trip_id = identifier(trip_id)
+    require_trip(trip_id)
+    MembershipRepository(g.db).leave(trip_id)
+    return success({"left": True})
