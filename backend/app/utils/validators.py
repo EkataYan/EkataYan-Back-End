@@ -35,6 +35,7 @@ class ProfilePatchInput(Input):
     language: Literal["en", "si", "ta"] | None = None
     interests: Tags | None = None
     phone: Annotated[str, Field(max_length=32)] | None = None
+    is_discoverable: bool | None = None
 
     @field_validator("phone")
     @classmethod
@@ -98,6 +99,7 @@ class PlannerInput(Input):
     interests: Tags = []
     travel_pace: Literal["Relaxed", "Balanced", "Packed"] = "Balanced"
     special_requests: Annotated[str, Field(max_length=2000)] = ""
+    preferred_language: Literal["en", "si", "ta"] = "en"
     let_ai_choose_destinations: bool = False
     suggest_additional_places: bool = False
 
@@ -148,6 +150,22 @@ class ExpenseInput(Input):
             base = (self.amount / len(self.participants)).quantize(Decimal("0.01"), rounding="ROUND_DOWN")
             if any(p.share not in (base, base + Decimal("0.01")) for p in self.participants):
                 raise ValueError("Equal shares must differ by at most one cent.")
+        return self
+
+
+class EqualExpenseInput(Input):
+    title: Text
+    amount: Annotated[Decimal, Field(gt=0, max_digits=14, decimal_places=2, allow_inf_nan=False)]
+    category: Literal["Accommodation", "Transport", "Food & Drinks", "Activities", "Shopping", "Other"]
+    paid_by: UUID
+    participant_ids: Annotated[list[UUID], Field(min_length=1, max_length=100)]
+    expense_date: date = Field(default_factory=date.today)
+    notes: Annotated[str, Field(max_length=2000)] = ""
+
+    @model_validator(mode="after")
+    def unique_participants(self):
+        if len(set(self.participant_ids)) != len(self.participant_ids):
+            raise ValueError("Participants must be unique.")
         return self
 
 

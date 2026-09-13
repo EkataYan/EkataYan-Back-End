@@ -62,6 +62,12 @@ class ExpenseRepository:
         return self.db.select("expenses", {"trip_id": trip_id}, select="*,expense_participants(*)", **page)
     def delete(self, trip_id, expense_id):
         return self.db.rpc("delete_expense", {"p_trip_id": trip_id, "p_expense_id": expense_id})
+    def create_equal(self, trip_id, data):
+        return self.db.rpc("create_equal_expense", {"p_trip_id": trip_id, "p_data": data})
+    def public_list(self, trip_id):
+        return self.db.rpc("list_trip_expenses_public", {"p_trip_id": trip_id})
+    def balances(self, trip_id):
+        return self.db.rpc("get_trip_expense_balances", {"p_trip_id": trip_id})
 
 
 class NotificationRepository:

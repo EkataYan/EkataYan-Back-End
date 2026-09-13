@@ -2,7 +2,7 @@ from flask import Blueprint, g
 from app.middleware.auth_middleware import authenticated, require_trip
 from app.repositories import ExpenseRepository
 from app.utils.responses import APIError, success
-from app.utils.validators import ExpenseInput, identifier, pagination, parse
+from app.utils.validators import EqualExpenseInput, ExpenseInput, identifier, pagination, parse
 
 bp = Blueprint("expenses", __name__)
 
@@ -11,9 +11,9 @@ bp = Blueprint("expenses", __name__)
 @authenticated
 def create(trip_id):
     trip_id = identifier(trip_id)
-    data = parse(ExpenseInput).model_dump(mode="json")
+    data = parse(EqualExpenseInput, error_status=400).model_dump(mode="json")
     require_trip(trip_id)
-    return success(ExpenseRepository(g.db).save(trip_id, data), 201)
+    return success(ExpenseRepository(g.db).create_equal(trip_id, data), 201)
 
 
 @bp.get("/trips/<trip_id>/expenses")
@@ -21,8 +21,15 @@ def create(trip_id):
 def list_expenses(trip_id):
     trip_id = identifier(trip_id)
     require_trip(trip_id)
-    page = pagination()
-    return success(ExpenseRepository(g.db).list(trip_id, page), pagination=page)
+    return success(ExpenseRepository(g.db).public_list(trip_id))
+
+
+@bp.get("/trips/<trip_id>/expense-balances")
+@authenticated
+def balances(trip_id):
+    trip_id = identifier(trip_id)
+    require_trip(trip_id)
+    return success(ExpenseRepository(g.db).balances(trip_id))
 
 
 def editable(expense_id):
