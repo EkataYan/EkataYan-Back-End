@@ -56,6 +56,10 @@ class FakeSupabase:
         self.rows[table].remove(row)
 
     def rpc(self, name, data):
+        if name == "save_ai_trip":
+            trip = self.insert("trips", data["p_trip"] | {"source": "ai"})
+            itinerary = self.insert("itineraries", data["p_itinerary"] | {"trip_id": trip["id"]})
+            return {"trip": trip, "itinerary_id": itinerary["id"]}
         return {"rpc": name, **data}
 
 

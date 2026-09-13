@@ -381,22 +381,16 @@ def test_gemini_structured_output_retries_once():
     from app.services.ai_service import AIService
 
     valid = {
-        "trip": {"title": "Ella Escape", "summary": "A balanced Ella trip.", "route": ["Ella"],
-                 "start_date": "2026-10-01", "end_date": "2026-10-03", "duration_days": 3,
-                 "traveller_type": "Solo", "traveller_count": 1, "travel_style": "Comfort", "travel_pace": "Balanced"},
-        "days": [{"day_number": day, "date": f"2026-10-0{day}", "destination": "Ella",
-                  "title": f"Ella day {day}", "summary": "A sensible day.", "activities": [{
-                      "id": f"ella-{day}-1", "name": "Ella walk", "category": "Nature",
-                      "location": {"name": "Ella", "latitude": None, "longitude": None},
-                      "start_time": "09:00", "end_time": "10:00", "duration_minutes": 60,
-                      "description": "Explore Ella.", "estimated_cost_lkr": 1000,
-                      "transport_from_previous": "Walk", "travel_time_minutes": 10}],
-                  "day_estimated_cost_lkr": {"min": 3000, "max": 5000}} for day in range(1, 4)],
-        "cost_estimate": {"currency": "LKR", "accommodation": {"min": 10000, "max": 15000},
-                          "transport": {"min": 2000, "max": 4000}, "food": {"min": 5000, "max": 8000},
-                          "activities": {"min": 3000, "max": 5000}, "total": {"min": 20000, "max": 32000},
-                          "disclaimer": "AI-generated estimate only. Actual prices may vary."},
-        "recommendations": [],
+        "trip": {"title": "Ella Escape", "summary": "A balanced Ella trip.", "route": ["Ella"]},
+        "days": [{
+            "day_number": day, "date": f"2026-10-0{day}", "destination": "Ella",
+            "title": f"Ella day {day}",
+            "activities": [{
+                "name": f"Ella activity {activity}", "location": "Ella",
+                "start_time": f"{8 + activity:02d}:00", "duration_minutes": 60,
+            } for activity in range(1, 4)],
+        } for day in range(1, 4)],
+        "cost_estimate": {"total": {"min": 20000, "max": 32000}},
     }
     class Interactions:
         def __init__(self): self.calls = []
@@ -410,17 +404,17 @@ def test_gemini_structured_output_retries_once():
     result = service.generate_itinerary(planner_payload())
     assert len(interactions.calls) == 2
     assert interactions.calls[0]["response_format"]["mime_type"] == "application/json"
-    assert "schema" not in interactions.calls[0]["response_format"]
-    assert "Required response JSON schema" in interactions.calls[0]["input"]
+    assert "schema" in interactions.calls[0]["response_format"]
+    assert interactions.calls[0]["generation_config"]["thinking_level"] == "low"
     assert result.trip.duration_days == 3
 
 
-def test_gemini_schema_is_supplied_in_prompt_not_response_format():
-    from app.services.ai_service import APPLICATION_ITINERARY_SCHEMA
+def test_gemini_initial_schema_is_compact():
+    from app.services.ai_service import INITIAL_RESPONSE_SCHEMA
 
-    assert set(APPLICATION_ITINERARY_SCHEMA["properties"]) == {
-        "trip", "days", "cost_estimate", "recommendations"
-    }
+    assert set(INITIAL_RESPONSE_SCHEMA["properties"]) == {"trip", "days", "cost_estimate"}
+    activity = INITIAL_RESPONSE_SCHEMA["properties"]["days"]["items"]["properties"]["activities"]["items"]
+    assert set(activity["properties"]) == {"name", "location", "start_time", "duration_minutes"}
 
 
 def test_gaos_bad_request_maps_to_clean_502():

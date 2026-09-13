@@ -1,6 +1,6 @@
 from flask import Blueprint, g
 from app.middleware.auth_middleware import authenticated, require_trip
-from app.repositories import TripRepository
+from app.repositories import ItineraryRepository, TripRepository
 from app.utils.responses import success
 from app.utils.validators import TripInput, identifier, pagination, parse
 
@@ -26,6 +26,17 @@ def list_trips():
 @authenticated
 def get_trip(trip_id):
     return success(require_trip(identifier(trip_id)))
+
+
+@bp.get("/trips/<trip_id>/details")
+@authenticated
+def get_trip_details(trip_id):
+    trip_id = identifier(trip_id)
+    trip = require_trip(trip_id)
+    itineraries = ItineraryRepository(g.db).list(trip_id)
+    itinerary = itineraries[0] if itineraries else None
+    structured = itinerary.get("structured_data") if itinerary else None
+    return success({"trip": trip, "itinerary": itinerary, "structured_itinerary": structured})
 
 
 @bp.put("/trips/<trip_id>")

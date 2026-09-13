@@ -155,6 +155,39 @@ class AiItineraryResponse(Schema):
     recommendations: Annotated[list[Name], Field(max_length=30)] = Field(default_factory=list)
 
 
+# Latency-optimized Stage 1 schema. The backend expands this into the stable
+# AiItineraryResponse contract consumed by Android.
+class InitialActivity(Schema):
+    name: Name
+    location: Name
+    start_time: time
+    duration_minutes: Annotated[StrictInt, Field(gt=0, le=720)]
+
+
+class InitialDay(Schema):
+    day_number: Annotated[StrictInt, Field(ge=1, le=30)]
+    date: date
+    destination: Name
+    title: Name
+    activities: Annotated[list[InitialActivity], Field(min_length=1, max_length=5)]
+
+
+class InitialTrip(Schema):
+    title: Name
+    summary: Annotated[str, Field(max_length=300)]
+    route: Annotated[list[Name], Field(min_length=1, max_length=20)]
+
+
+class InitialCostEstimate(Schema):
+    total: CostRange
+
+
+class InitialItineraryResponse(Schema):
+    trip: InitialTrip
+    days: Annotated[list[InitialDay], Field(min_length=1, max_length=30)]
+    cost_estimate: InitialCostEstimate
+
+
 class PlannedItinerarySave(Schema):
     planner: PlannerRequest
     itinerary: AiItineraryResponse
