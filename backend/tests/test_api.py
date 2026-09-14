@@ -382,6 +382,7 @@ def planner_payload(**overrides):
         "start_date": "2026-10-01", "end_date": "2026-10-03", "transport_preferences": [],
         "accommodation_preference": None, "travel_style": None, "interests": [], "travel_pace": None,
         "special_requests": None, "allow_ai_destination_suggestions": False,
+        "suggest_additional_places": False,
     }
     return payload | overrides
 
@@ -430,6 +431,90 @@ def test_planner_accepts_string_destinations_and_null_optional_fields(client, au
         ),
     )
     assert response.status_code == 418
+
+
+@pytest.mark.parametrize("language", ["en", "si", "ta"])
+def test_planner_accepts_supported_preferred_languages_and_reaches_ai(client, auth_headers, language):
+    class FakeAI:
+        def generate_itinerary(self, planner):
+            assert planner.preferred_language == language
+            from app.utils.responses import APIError
+            raise APIError("expected", "request reached AI", 418)
+
+    client.application.extensions["ai_service"] = FakeAI()
+    response = client.post(
+        "/api/itineraries/preview",
+        headers=auth_headers,
+        json=planner_payload(preferred_language=language),
+    )
+
+    assert response.status_code == 418
+    assert response.json["error"]["message"] == "request reached AI"
+
+
+def test_planner_rejects_invalid_preferred_language_before_ai(client, auth_headers):
+    class FakeAI:
+        called = False
+
+        def generate_itinerary(self, _planner):
+            self.called = True
+
+    fake_ai = FakeAI()
+    client.application.extensions["ai_service"] = fake_ai
+    response = client.post(
+        "/api/itineraries/preview",
+        headers=auth_headers,
+        json=planner_payload(preferred_language="fr"),
+    )
+
+    assert response.status_code == 400
+    assert response.json["error"] == {
+        "code": "validation_error",
+        "message": "Preferred language must be one of: en, si, ta.",
+    }
+    assert fake_ai.called is False
+
+
+def test_planner_defaults_missing_preferred_language_to_english(client, auth_headers):
+    class FakeAI:
+        def generate_itinerary(self, planner):
+            assert planner.preferred_language == "en"
+            from app.utils.responses import APIError
+            raise APIError("expected", "request reached AI", 418)
+
+    client.application.extensions["ai_service"] = FakeAI()
+    response = client.post(
+        "/api/itineraries/preview", headers=auth_headers, json=planner_payload()
+    )
+
+    assert response.status_code == 418
+
+
+def test_planner_keeps_strict_extra_field_validation(client, auth_headers):
+    client.application.extensions["ai_service"] = object()
+    response = client.post(
+        "/api/itineraries/preview",
+        headers=auth_headers,
+        json=planner_payload(unsupported_frontend_field=True),
+    )
+
+    assert response.status_code == 400
+    assert response.json["error"]["code"] == "validation_error"
+
+
+@pytest.mark.parametrize(
+    ("language", "language_name"),
+    [("en", "English"), ("si", "Sinhala"), ("ta", "Tamil")],
+)
+def test_preferred_language_is_included_in_stage1_gemini_prompt(language, language_name):
+    from app.models.itinerary import PlannerRequest
+    from app.services.ai_service import AIService
+
+    planner = PlannerRequest.model_validate(planner_payload(preferred_language=language))
+    prompt = AIService._initial_prompt(planner)
+
+    assert f"content in {language_name}" in prompt
+    assert f'"preferred_language":"{language}"' in prompt
 
 
 def test_gemini_structured_output_retries_once():

@@ -11,6 +11,7 @@ class Schema(BaseModel):
 Name = Annotated[str, Field(min_length=1, max_length=200)]
 Text = Annotated[str, Field(max_length=4000)]
 Money = Annotated[int, Field(ge=0, le=2_000_000_000)]
+PreferredLanguage = Literal["en", "si", "ta"]
 
 
 class PlannerDestination(Schema):
@@ -40,6 +41,7 @@ class PlannerRequest(Schema):
     special_requests: Annotated[str, Field(max_length=2000)] | None = None
     allow_ai_destination_suggestions: bool = False
     suggest_additional_places: bool = False
+    preferred_language: PreferredLanguage = "en"
 
     @field_validator("destinations", mode="before")
     @classmethod
