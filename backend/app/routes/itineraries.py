@@ -37,6 +37,8 @@ def _planner_payload(model=PlannerRequest):
             message = "Trip dates are invalid."
         elif "traveller_count" in locations:
             message = "Traveller count must be greater than zero."
+        elif "preferred_language" in locations:
+            message = "Preferred language must be one of: en, si, ta."
         else:
             message = "Please check your trip information."
         logger.warning(

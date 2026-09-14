@@ -16,6 +16,8 @@ from app.utils.responses import APIError
 
 logger = logging.getLogger(__name__)
 
+LANGUAGE_NAMES = {"en": "English", "si": "Sinhala", "ta": "Tamil"}
+
 
 APPLICATION_ITINERARY_SCHEMA = AiItineraryResponse.model_json_schema()
 
@@ -188,25 +190,7 @@ class AIService:
     def _generate_initial_itinerary(self, planner):
         started = time.monotonic()
         prompt_started = time.monotonic()
-        preferences = {
-            "destinations": [item.name for item in planner.destinations],
-            "allow_ai_destination_suggestions": planner.allow_ai_destination_suggestions,
-            "traveller_type": planner.traveller_type,
-            "traveller_count": planner.traveller_count,
-            "start_date": str(planner.start_date),
-            "end_date": str(planner.end_date),
-            "duration_days": planner.duration_days,
-            "transport": planner.transport_preferences,
-            "accommodation": planner.accommodation_preference,
-            "travel_style": planner.travel_style,
-            "interests": planner.interests,
-            "pace": planner.travel_pace or "Balanced",
-            "special_requests": planner.special_requests,
-        }
-        preferences = {key: value for key, value in preferences.items() if value not in (None, "", [])}
-        prompt = "Create the Stage 1 itinerary from these trip preferences:\n" + json.dumps(
-            preferences, separators=(",", ":")
-        )
+        prompt = self._initial_prompt(planner)
         prompt_ms = round((time.monotonic() - prompt_started) * 1000)
         last_error = None
         for attempt in range(2):
@@ -251,6 +235,34 @@ class AIService:
         logger.error("AI stage1 failed after retry class=%s total_ms=%s", type(last_error).__name__,
                      round((time.monotonic() - started) * 1000))
         raise APIError("ai_generation_failed", "We couldn't generate your itinerary.", 502)
+
+    @staticmethod
+    def _initial_prompt(planner):
+        preferences = {
+            "destinations": [item.name for item in planner.destinations],
+            "allow_ai_destination_suggestions": planner.allow_ai_destination_suggestions,
+            "traveller_type": planner.traveller_type,
+            "traveller_count": planner.traveller_count,
+            "start_date": str(planner.start_date),
+            "end_date": str(planner.end_date),
+            "duration_days": planner.duration_days,
+            "transport": planner.transport_preferences,
+            "accommodation": planner.accommodation_preference,
+            "travel_style": planner.travel_style,
+            "interests": planner.interests,
+            "pace": planner.travel_pace or "Balanced",
+            "special_requests": planner.special_requests,
+            "preferred_language": planner.preferred_language,
+        }
+        preferences = {key: value for key, value in preferences.items() if value not in (None, "", [])}
+        language_name = LANGUAGE_NAMES[planner.preferred_language]
+        prompt = (
+            "Create the Stage 1 itinerary from these trip preferences. Write all human-readable itinerary "
+            f"content in {language_name}. Keep JSON property names unchanged and preserve Sri Lankan place "
+            "names unless a standard localized name is appropriate.\n"
+            + json.dumps(preferences, separators=(",", ":"))
+        )
+        return prompt
 
     def _raise_provider_error(self, error):
         module = type(error).__module__
@@ -317,11 +329,14 @@ class AIService:
     @staticmethod
     def _prompt(planner, modification):
         normalized = planner.model_dump(mode="json") | {"duration_days": planner.duration_days}
+        language_name = LANGUAGE_NAMES[planner.preferred_language]
         prompt = (
             "Create one complete itinerary from this normalized planner request. The backend-calculated "
             "duration_days and supplied dates, traveller type, and traveller count are immutable. Activity IDs "
             "must be unique strings. Include inter-city transfers in transport_from_previous and "
-            "travel_time_minutes. Every nested field in the response schema is required unless nullable.\n"
+            "travel_time_minutes. Every nested field in the response schema is required unless nullable. "
+            f"Write all human-readable itinerary content in {language_name}; keep JSON property names unchanged "
+            "and preserve Sri Lankan place names unless a standard localized name is appropriate.\n"
             "Required response JSON schema:\n"
             + json.dumps(APPLICATION_ITINERARY_SCHEMA, separators=(",", ":"))
             + "\nPlanner request:\n" + json.dumps(normalized, separators=(",", ":"))
