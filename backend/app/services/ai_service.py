@@ -1,11 +1,10 @@
-"""Gemini-backed, structured Sri Lanka itinerary generation."""
+"""xAI Grok-backed, structured Sri Lanka itinerary generation."""
 from datetime import datetime, timedelta
 import json
 import logging
 import time
 
-from google import genai
-from google.genai import errors, types
+import httpx
 from pydantic import ValidationError
 
 from app.models.itinerary import (
@@ -17,6 +16,7 @@ from app.utils.responses import APIError
 logger = logging.getLogger(__name__)
 
 LANGUAGE_NAMES = {"en": "English", "si": "Sinhala", "ta": "Tamil"}
+XAI_RESPONSES_URL = "https://api.x.ai/v1/responses"
 
 
 APPLICATION_ITINERARY_SCHEMA = AiItineraryResponse.model_json_schema()
@@ -77,11 +77,15 @@ INITIAL_RESPONSE_SCHEMA = {
     "required": ["trip", "days", "cost_estimate"],
 }
 
-INITIAL_SYSTEM_INSTRUCTION = """You plan realistic Sri Lanka trips. Return only schema-valid JSON.
-Respect the supplied dates and destination order. Account for real road/rail travel and meal breaks.
-Keep the trip summary to one short sentence. Produce only the requested number of main activities:
-Relaxed 2-3/day, Balanced 3-4/day, Packed 4-5/day. Do not output descriptions, coordinates,
-transport metadata, recommendations, or detailed cost categories. Cost total is approximate group LKR."""
+INITIAL_SYSTEM_INSTRUCTION = """You are the itinerary engine for EkataYan and an expert Sri Lanka travel planner.
+Return only data matching the required JSON schema, with no markdown, code fences, or commentary.
+Create practical, realistic Sri Lankan itineraries. Respect the exact dates, duration, traveller count and type,
+budget tier, interests, transport preferences, accommodation preference, and optional user requests. Treat
+multiple destinations as one coherent route, preserve their order when practical, group nearby attractions,
+and allow realistic road or rail transfers, opening hours, meals, and rest. Avoid impossible schedules,
+excessive activities, generic filler, and obviously nonexistent places. Keep the trip summary to one short
+sentence. Produce only the requested number of main activities: Relaxed 2-3/day, Balanced 3-4/day, Packed
+4-5/day. Do not output fields outside the schema. Cost total is an approximate total group cost in LKR."""
 
 SYSTEM_INSTRUCTION = """You are the itinerary engine for EkataYan, a Sri Lankan travel planning application.
 Generate realistic Sri Lankan travel itineraries using only the supplied trip preferences.
@@ -106,18 +110,22 @@ choose a coherent Sri Lankan route based on duration, party, interests, style, t
 
 class AIService:
     def __init__(self, config, client_factory=None):
-        self.model = config["GEMINI_MODEL"]
-        timeout_ms = int(config.get("GEMINI_TIMEOUT_SECONDS", 60)) * 1000
-        factory = client_factory or genai.Client
-        self.client = factory(api_key=config["GEMINI_API_KEY"], http_options=types.HttpOptions(timeout=timeout_ms))
+        self.provider = config.get("AI_PROVIDER", "grok").strip().lower()
+        if self.provider != "grok":
+            raise ValueError(f"Unsupported AI provider: {self.provider}")
+        self.model = config.get("AI_MODEL", "grok-4.6")
+        self.api_key = config["XAI_API_KEY"]
+        timeout_seconds = float(config.get("AI_TIMEOUT_SECONDS", 60))
+        factory = client_factory or httpx.Client
+        self.client = factory(timeout=httpx.Timeout(timeout_seconds))
 
     def generate_itinerary(self, planner_data, modification=None):
         planner = planner_data if isinstance(planner_data, PlannerRequest) else PlannerRequest.model_validate(planner_data)
         if modification is None:
             return self._generate_initial_itinerary(planner)
         started = time.monotonic()
-        logger.info("Gemini itinerary generation started destinations=%s duration_days=%s suggestion_mode=%s",
-                    len(planner.destinations), planner.duration_days, planner.allow_ai_destination_suggestions)
+        logger.info("AI itinerary request started provider=%s model=%s mode=modify duration_days=%s",
+                    self.provider, self.model, planner.duration_days)
         base_prompt = self._prompt(planner, modification)
         last_error = None
         for attempt in range(2):
@@ -126,17 +134,13 @@ class AIService:
                 "matching the required schema exactly."
             )
             try:
-                interaction = self.client.interactions.create(
-                    model=self.model,
-                    input=prompt,
-                    system_instruction=SYSTEM_INSTRUCTION,
-                    response_format={"type": "text", "mime_type": "application/json"},
-                    store=False,
+                raw, _usage = self._request_structured(
+                    prompt, SYSTEM_INSTRUCTION, APPLICATION_ITINERARY_SCHEMA, "ekatayan_itinerary"
                 )
-                logger.info("Gemini response received attempt=%s", attempt + 1)
-                result = AiItineraryResponse.model_validate_json(interaction.output_text or "")
+                result = AiItineraryResponse.model_validate_json(raw)
                 result = self._enforce_deterministic_facts(result, planner)
-                logger.info("Gemini itinerary parsed successfully attempt=%s duration_ms=%s", attempt + 1,
+                logger.info("AI itinerary succeeded provider=%s model=%s attempt=%s duration_ms=%s",
+                            self.provider, self.model, attempt + 1,
                             round((time.monotonic() - started) * 1000))
                 return result
             except ValidationError as error:
@@ -145,50 +149,21 @@ class AIService:
                     {"path": ".".join(str(part) for part in item["loc"]), "message": item["msg"]}
                     for item in error.errors(include_input=False, include_url=False)[:20]
                 ]
-                logger.warning("Gemini itinerary schema validation failed attempt=%s issues=%s",
-                               attempt + 1, issues)
-            except (TimeoutError, errors.ServerError) as error:
-                logger.exception(
-                    "Gemini SDK request unavailable source=gemini_sdk class=%s message=%s status=%s model=%s",
-                    type(error).__name__, str(error),
-                    getattr(error, "status_code", getattr(error, "code", None)), self.model,
-                )
-                if getattr(error, "code", None) in (408, 504) or isinstance(error, TimeoutError):
-                    raise APIError("ai_timeout", "Itinerary generation took too long. Please try again.", 504) from None
-                raise APIError("ai_unavailable", "AI itinerary generation is temporarily unavailable.", 503) from None
-            except errors.APIError as error:
-                logger.exception(
-                    "Gemini SDK request failed source=gemini_sdk class=%s message=%s status=%s model=%s",
-                    type(error).__name__, str(error),
-                    getattr(error, "status_code", getattr(error, "code", None)), self.model,
-                )
-                raise APIError("ai_request_failed", "The AI itinerary request could not be processed.", 502) from None
+                logger.warning("AI itinerary validation failed provider=%s model=%s attempt=%s issues=%s",
+                               self.provider, self.model, attempt + 1, issues)
             except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
                 last_error = error
-                logger.warning("Gemini response parsing failed attempt=%s error_type=%s message=%s",
-                               attempt + 1, type(error).__name__, str(error))
-            except Exception as error:
-                # Interactions/GAOS exceptions (including BadRequestError) are not
-                # subclasses of google.genai.errors.APIError in google-genai 2.23.
-                module = type(error).__module__
-                if module.startswith("google.genai"):
-                    status = getattr(error, "status_code", getattr(error, "code", None))
-                    logger.exception(
-                        "Gemini SDK request failed source=gemini_sdk class=%s message=%s status=%s model=%s",
-                        type(error).__name__, str(error), status, self.model,
-                    )
-                    if status in (408, 504):
-                        raise APIError("ai_timeout", "Itinerary generation took too long. Please try again.", 504) from None
-                    if status == 400:
-                        raise APIError("ai_request_failed", "The AI itinerary request could not be processed.", 502) from None
-                    raise APIError("ai_unavailable", "AI itinerary generation is temporarily unavailable.", 503) from None
-                raise
-        logger.error("Gemini itinerary rejected after retry duration_ms=%s error_type=%s",
-                     round((time.monotonic() - started) * 1000), type(last_error).__name__)
+                logger.warning("AI response parsing failed provider=%s model=%s attempt=%s error_type=%s",
+                               self.provider, self.model, attempt + 1, type(error).__name__)
+        logger.error("AI itinerary rejected after retry provider=%s model=%s duration_ms=%s error_type=%s",
+                     self.provider, self.model, round((time.monotonic() - started) * 1000),
+                     type(last_error).__name__)
         raise APIError("ai_generation_failed", "We couldn't generate your itinerary.", 502)
 
     def _generate_initial_itinerary(self, planner):
         started = time.monotonic()
+        logger.info("AI itinerary request started provider=%s model=%s mode=preview duration_days=%s",
+                    self.provider, self.model, planner.duration_days)
         prompt_started = time.monotonic()
         prompt = self._initial_prompt(planner)
         prompt_ms = round((time.monotonic() - prompt_started) * 1000)
@@ -196,17 +171,16 @@ class AIService:
         for attempt in range(2):
             ai_started = time.monotonic()
             try:
-                interaction = self.client.interactions.create(
-                    model=self.model,
-                    input=prompt if attempt == 0 else prompt + "\nRegenerate with exact dates, day count, and activity limits.",
-                    system_instruction=INITIAL_SYSTEM_INSTRUCTION,
-                    response_format={"type": "text", "mime_type": "application/json",
-                                     "schema": INITIAL_RESPONSE_SCHEMA},
-                    generation_config={"thinking_level": "low"},
-                    store=False,
+                raw, usage = self._request_structured(
+                    prompt if attempt == 0 else prompt + (
+                        "\nYour prior response was invalid. Regenerate the complete JSON with exact dates, "
+                        "day count, and activity limits."
+                    ),
+                    INITIAL_SYSTEM_INSTRUCTION,
+                    INITIAL_RESPONSE_SCHEMA,
+                    "ekatayan_itinerary_preview",
                 )
                 ai_ms = round((time.monotonic() - ai_started) * 1000)
-                raw = interaction.output_text or ""
                 json_started = time.monotonic()
                 decoded = json.loads(raw)
                 json_ms = round((time.monotonic() - json_started) * 1000)
@@ -216,41 +190,109 @@ class AIService:
                 normalize_started = time.monotonic()
                 result = self._expand_initial_itinerary(initial, planner)
                 normalize_ms = round((time.monotonic() - normalize_started) * 1000)
-                usage = getattr(interaction, "usage", None)
-                output_tokens = getattr(usage, "total_output_tokens", None)
+                output_tokens = usage.get("output_tokens") if isinstance(usage, dict) else None
                 logger.info(
-                    "AI stage1 timing model=%s attempt=%s prompt_ms=%s ai_request_ms=%s json_parse_ms=%s "
+                    "AI itinerary succeeded provider=%s model=%s mode=preview attempt=%s prompt_ms=%s ai_request_ms=%s json_parse_ms=%s "
                     "schema_validation_ms=%s normalization_ms=%s total_ms=%s prompt_chars=%s response_bytes=%s output_tokens=%s",
-                    self.model, attempt + 1, prompt_ms, ai_ms, json_ms, validation_ms, normalize_ms,
+                    self.provider, self.model, attempt + 1, prompt_ms, ai_ms, json_ms, validation_ms, normalize_ms,
                     round((time.monotonic() - started) * 1000), len(prompt), len(raw.encode("utf-8")), output_tokens,
                 )
                 return result
             except (ValidationError, ValueError, KeyError, TypeError, json.JSONDecodeError) as error:
                 last_error = error
-                logger.warning("AI stage1 response rejected attempt=%s class=%s message=%s ai_request_ms=%s",
-                               attempt + 1, type(error).__name__, str(error),
+                logger.warning("AI response validation failed provider=%s model=%s mode=preview attempt=%s class=%s ai_request_ms=%s",
+                               self.provider, self.model, attempt + 1, type(error).__name__,
                                round((time.monotonic() - ai_started) * 1000))
-            except Exception as error:
-                self._raise_provider_error(error)
-        logger.error("AI stage1 failed after retry class=%s total_ms=%s", type(last_error).__name__,
+        logger.error("AI preview failed after retry provider=%s model=%s class=%s total_ms=%s",
+                     self.provider, self.model, type(last_error).__name__,
                      round((time.monotonic() - started) * 1000))
         raise APIError("ai_generation_failed", "We couldn't generate your itinerary.", 502)
+
+    def _request_structured(self, prompt, instruction, schema, schema_name):
+        payload = {
+            "model": self.model,
+            "instructions": instruction,
+            "input": prompt,
+            "text": {"format": {
+                "type": "json_schema", "name": schema_name, "schema": schema, "strict": True,
+            }},
+        }
+        request_started = time.monotonic()
+        try:
+            response = self.client.post(
+                XAI_RESPONSES_URL,
+                headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
+                json=payload,
+            )
+        except httpx.TimeoutException:
+            logger.warning("AI request timed out provider=%s model=%s duration_ms=%s", self.provider,
+                           self.model, round((time.monotonic() - request_started) * 1000))
+            raise APIError("ai_timeout", "Itinerary generation took too long. Please try again.", 504) from None
+        except httpx.RequestError as error:
+            logger.warning("AI network request failed provider=%s model=%s class=%s duration_ms=%s",
+                           self.provider, self.model, type(error).__name__,
+                           round((time.monotonic() - request_started) * 1000))
+            raise APIError("ai_unavailable", "AI itinerary generation is temporarily unavailable.", 503) from None
+
+        duration_ms = round((time.monotonic() - request_started) * 1000)
+        logger.info("AI response received provider=%s model=%s status=%s duration_ms=%s",
+                    self.provider, self.model, response.status_code, duration_ms)
+        self._raise_http_error(response.status_code, duration_ms)
+        try:
+            data = response.json()
+        except ValueError as error:
+            raise ValueError("xAI returned an invalid response envelope") from error
+        raw = self._extract_output_text(data)
+        if not raw.strip():
+            raise ValueError("xAI returned an empty response")
+        return raw, data.get("usage", {})
+
+    def _raise_http_error(self, status, duration_ms):
+        if status < 400:
+            return
+        logger.warning("AI provider request failed provider=%s model=%s status=%s duration_ms=%s",
+                       self.provider, self.model, status, duration_ms)
+        if status in (401, 403):
+            raise APIError("ai_authentication_failed", "AI itinerary generation authentication failed.", 502)
+        if status == 429:
+            raise APIError("ai_rate_limited", "AI itinerary generation is busy. Please try again shortly.", 429)
+        if status in (408, 504):
+            raise APIError("ai_timeout", "Itinerary generation took too long. Please try again.", 504)
+        if status in (404, 422):
+            raise APIError("ai_model_unavailable", "The configured AI model is unavailable.", 503)
+        if status >= 500:
+            raise APIError("ai_unavailable", "AI itinerary generation is temporarily unavailable.", 503)
+        raise APIError("ai_request_failed", "The AI itinerary request could not be processed.", 502)
+
+    @staticmethod
+    def _extract_output_text(data):
+        if isinstance(data.get("output_text"), str):
+            return data["output_text"]
+        parts = []
+        for output in data.get("output", []):
+            if not isinstance(output, dict) or output.get("type") != "message":
+                continue
+            for content in output.get("content", []):
+                if isinstance(content, dict) and content.get("type") == "output_text" and isinstance(content.get("text"), str):
+                    parts.append(content["text"])
+        return "".join(parts)
 
     @staticmethod
     def _initial_prompt(planner):
         preferences = {
-            "destinations": [item.name for item in planner.destinations],
+            "destinations": [item.model_dump(mode="json", exclude_none=True) for item in planner.destinations],
             "allow_ai_destination_suggestions": planner.allow_ai_destination_suggestions,
+            "suggest_additional_places": planner.suggest_additional_places,
             "traveller_type": planner.traveller_type,
             "traveller_count": planner.traveller_count,
             "start_date": str(planner.start_date),
             "end_date": str(planner.end_date),
             "duration_days": planner.duration_days,
-            "transport": planner.transport_preferences,
-            "accommodation": planner.accommodation_preference,
+            "transport_preferences": planner.transport_preferences,
+            "accommodation_preference": planner.accommodation_preference,
             "travel_style": planner.travel_style,
             "interests": planner.interests,
-            "pace": planner.travel_pace or "Balanced",
+            "travel_pace": planner.travel_pace or "Balanced",
             "special_requests": planner.special_requests,
             "preferred_language": planner.preferred_language,
         }
@@ -263,19 +305,6 @@ class AIService:
             + json.dumps(preferences, separators=(",", ":"))
         )
         return prompt
-
-    def _raise_provider_error(self, error):
-        module = type(error).__module__
-        if not module.startswith("google.genai") and not isinstance(error, TimeoutError):
-            raise error
-        status = getattr(error, "status_code", getattr(error, "code", None))
-        logger.exception("Gemini SDK request failed source=gemini_sdk class=%s message=%s status=%s model=%s",
-                         type(error).__name__, str(error), status, self.model)
-        if status in (408, 504) or isinstance(error, TimeoutError):
-            raise APIError("ai_timeout", "Itinerary generation took too long. Please try again.", 504) from None
-        if status == 400:
-            raise APIError("ai_request_failed", "The AI itinerary request could not be processed.", 502) from None
-        raise APIError("ai_unavailable", "AI itinerary generation is temporarily unavailable.", 503) from None
 
     @staticmethod
     def _expand_initial_itinerary(initial, planner):
@@ -354,7 +383,7 @@ class AIService:
             )
         for index, day in enumerate(result.days, 1):
             # These values are owned by the backend; normalize instead of
-            # rejecting an otherwise useful itinerary when Gemini drifts.
+            # rejecting an otherwise useful itinerary when the model drifts.
             day.day_number = index
             day.date = planner.start_date + timedelta(days=index - 1)
         result.trip.start_date = planner.start_date

@@ -38,10 +38,9 @@ def create_app(config=None):
     @app.errorhandler(Exception)
     def unexpected_error(error):
         # Never include request bodies, headers, JWTs, configuration, or prompts here.
-        source = "gemini_sdk" if type(error).__module__.startswith("google.genai") else "application"
         app.logger.exception(
             "Unhandled exception source=%s class=%s message=%s",
-            source, type(error).__name__, str(error),
+            "application", type(error).__name__, str(error),
         )
         return api_error(APIError("INTERNAL_ERROR", "An unexpected error occurred.", 500))
 

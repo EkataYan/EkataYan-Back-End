@@ -19,7 +19,7 @@ def test_railway_health_is_public_and_dependency_free():
         "TESTING": True,
         "SUPABASE_URL": "",
         "SUPABASE_KEY": "",
-        "GEMINI_API_KEY": "",
+        "XAI_API_KEY": "",
         "WEATHER_API_KEY": "",
         "CORS_ORIGINS": [],
     })
@@ -36,7 +36,7 @@ def test_missing_supabase_configuration_does_not_crash_worker_import():
         "TESTING": True,
         "SUPABASE_URL": "",
         "SUPABASE_KEY": "",
-        "GEMINI_API_KEY": "",
+        "XAI_API_KEY": "",
         "WEATHER_API_KEY": "",
         "CORS_ORIGINS": [],
     })
@@ -182,7 +182,7 @@ def test_duplicate_username_update_returns_clear_conflict(auth_headers):
             })
 
     app = create_app({"TESTING": True, "SUPABASE_URL": "https://example.supabase.co", "SUPABASE_KEY": "test-key",
-                      "SUPABASE_SERVICE_ROLE_KEY": "", "CORS_ORIGINS": [], "GEMINI_API_KEY": "",
+                      "SUPABASE_SERVICE_ROLE_KEY": "", "CORS_ORIGINS": [], "XAI_API_KEY": "",
                       "SUPABASE_FACTORY": DuplicateUsernameFake})
     response = app.test_client().patch("/api/users/me", headers=auth_headers, json={"username": "already_taken"})
     assert response.status_code == 409
@@ -206,7 +206,7 @@ def test_profile_picture_upload_persists_storage_path_on_profile(auth_headers):
     Image.new("RGB", (24, 24), "#238DD1").save(image, format="PNG")
     image.seek(0)
     app = create_app({"TESTING": True, "SUPABASE_URL": "https://example.supabase.co", "SUPABASE_KEY": "test-key",
-                      "SUPABASE_SERVICE_ROLE_KEY": "", "CORS_ORIGINS": [], "GEMINI_API_KEY": "",
+                      "SUPABASE_SERVICE_ROLE_KEY": "", "CORS_ORIGINS": [], "XAI_API_KEY": "",
                       "SUPABASE_FACTORY": StorageUploadFake})
 
     response = app.test_client().post(
@@ -243,7 +243,7 @@ def test_profile_picture_download_is_authenticated_and_account_scoped(auth_heade
             return image_bytes, "image/jpeg"
 
     app = create_app({"TESTING": True, "SUPABASE_URL": "https://example.supabase.co", "SUPABASE_KEY": "test-key",
-                      "SUPABASE_SERVICE_ROLE_KEY": "", "CORS_ORIGINS": [], "GEMINI_API_KEY": "",
+                      "SUPABASE_SERVICE_ROLE_KEY": "", "CORS_ORIGINS": [], "XAI_API_KEY": "",
                       "SUPABASE_FACTORY": StorageDownloadFake})
 
     response = app.test_client().get("/api/storage/profile-picture", headers=auth_headers)
@@ -337,7 +337,7 @@ def test_weather_accepts_profile_city_and_normalizes_provider_data(client, auth_
     from app import create_app
     from conftest import FakeSupabase
     app = create_app({"TESTING": True, "SUPABASE_URL": "https://example.supabase.co", "SUPABASE_KEY": "test-key",
-                      "SUPABASE_SERVICE_ROLE_KEY": "", "CORS_ORIGINS": [], "GEMINI_API_KEY": "",
+                      "SUPABASE_SERVICE_ROLE_KEY": "", "CORS_ORIGINS": [], "XAI_API_KEY": "",
                       "WEATHER_API_KEY": "weather-key", "WEATHER_PROVIDER": "weatherapi",
                       "SUPABASE_FACTORY": FakeSupabase})
     response = app.test_client().get("/api/weather?location=Kandy&date=2026-10-01", headers=auth_headers)
@@ -369,7 +369,7 @@ def test_expense_delete_uses_authorized_atomic_rpc(client, auth_headers):
 
     from app import create_app
     app = create_app({"TESTING": True, "SUPABASE_URL": "https://example.supabase.co", "SUPABASE_KEY": "test-key",
-                      "SUPABASE_SERVICE_ROLE_KEY": "", "CORS_ORIGINS": [], "GEMINI_API_KEY": "",
+                      "SUPABASE_SERVICE_ROLE_KEY": "", "CORS_ORIGINS": [], "XAI_API_KEY": "",
                       "SUPABASE_FACTORY": ExpenseFake})
     response = app.test_client().delete("/api/expenses/00000000-0000-4000-8000-000000000030", headers=auth_headers)
     assert response.status_code == 200
@@ -506,7 +506,7 @@ def test_planner_keeps_strict_extra_field_validation(client, auth_headers):
     ("language", "language_name"),
     [("en", "English"), ("si", "Sinhala"), ("ta", "Tamil")],
 )
-def test_preferred_language_is_included_in_stage1_gemini_prompt(language, language_name):
+def test_preferred_language_is_included_in_ai_prompt(language, language_name):
     from app.models.itinerary import PlannerRequest
     from app.services.ai_service import AIService
 
@@ -517,11 +517,9 @@ def test_preferred_language_is_included_in_stage1_gemini_prompt(language, langua
     assert f'"preferred_language":"{language}"' in prompt
 
 
-def test_gemini_structured_output_retries_once():
-    import json
-    from app.services.ai_service import AIService
-
-    valid = {
+def valid_grok_preview(route=None):
+    route = route or ["Ella"]
+    return {
         "trip": {"title": "Ella Escape", "summary": "A balanced Ella trip.", "route": ["Ella"]},
         "days": [{
             "day_number": day, "date": f"2026-10-0{day}", "destination": "Ella",
@@ -533,24 +531,78 @@ def test_gemini_structured_output_retries_once():
         } for day in range(1, 4)],
         "cost_estimate": {"total": {"min": 20000, "max": 32000}},
     }
-    class Interactions:
-        def __init__(self): self.calls = []
-        def create(self, **kwargs):
-            self.calls.append(kwargs)
-            return type("Interaction", (), {"output_text": "not-json" if len(self.calls) == 1 else json.dumps(valid)})()
-    interactions = Interactions()
-    client = type("Client", (), {"interactions": interactions})()
-    service = AIService({"GEMINI_API_KEY": "test", "GEMINI_MODEL": "gemini-test", "GEMINI_TIMEOUT_SECONDS": "60"},
-                        client_factory=lambda **_kwargs: client)
+
+
+def grok_service(handler):
+    import httpx
+    from app.services.ai_service import AIService
+
+    return AIService(
+        {"AI_PROVIDER": "grok", "XAI_API_KEY": "test-key", "AI_MODEL": "grok-4.6",
+         "AI_TIMEOUT_SECONDS": "5"},
+        client_factory=lambda **kwargs: httpx.Client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+
+
+def xai_json_response(request, output_text, status=200):
+    import httpx
+
+    return httpx.Response(status, request=request, json={
+        "output": [{"type": "message", "content": [{"type": "output_text", "text": output_text}]}],
+        "usage": {"output_tokens": 100},
+    })
+
+
+def test_grok_structured_output_retries_once_and_preserves_contract():
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        body = json.loads(request.content)
+        assert str(request.url) == "https://api.x.ai/v1/responses"
+        assert request.headers["Authorization"] == "Bearer test-key"
+        assert body["model"] == "grok-4.6"
+        assert body["text"]["format"]["type"] == "json_schema"
+        assert body["text"]["format"]["strict"] is True
+        output = "not-json" if len(calls) == 1 else json.dumps(valid_grok_preview())
+        return xai_json_response(request, output)
+
+    service = grok_service(handler)
     result = service.generate_itinerary(planner_payload())
-    assert len(interactions.calls) == 2
-    assert interactions.calls[0]["response_format"]["mime_type"] == "application/json"
-    assert "schema" in interactions.calls[0]["response_format"]
-    assert interactions.calls[0]["generation_config"]["thinking_level"] == "low"
+    assert len(calls) == 2
     assert result.trip.duration_days == 3
+    assert result.days[0].activities[0].id == "day-1-activity-1"
 
 
-def test_gemini_initial_schema_is_compact():
+def test_grok_receives_multiple_destinations_and_all_preferences():
+    captured = {}
+
+    def handler(request):
+        captured.update(json.loads(request.content))
+        response = valid_grok_preview(["Kandy", "Ella"])
+        response["trip"]["route"] = ["Kandy", "Ella"]
+        response["days"][0]["destination"] = "Kandy"
+        return xai_json_response(request, json.dumps(response))
+
+    service = grok_service(handler)
+    result = service.generate_itinerary(planner_payload(
+        destinations=[{"name": "Kandy", "place_id": "kandy-id", "latitude": 7.2906,
+                       "longitude": 80.6337}, "Ella"],
+        suggest_additional_places=True, traveller_type="Friends", traveller_count=4,
+        transport_preferences=["Train", "Private car"], accommodation_preference="Guesthouse",
+        travel_style="Budget", interests=["Hiking", "History"], travel_pace="Balanced",
+        special_requests="Vegetarian meals",
+    ))
+
+    prompt = captured["input"]
+    for expected in ("Kandy", "kandy-id", "7.2906", "Ella", "Friends", "Train", "Private car", "Guesthouse",
+                     "Budget", "Hiking", "History", "Vegetarian meals"):
+        assert expected in prompt
+    assert '"suggest_additional_places":true' in prompt
+    assert result.trip.route == ["Kandy", "Ella"]
+
+
+def test_grok_initial_schema_is_compact():
     from app.services.ai_service import INITIAL_RESPONSE_SCHEMA
 
     assert set(INITIAL_RESPONSE_SCHEMA["properties"]) == {"trip", "days", "cost_estimate"}
@@ -558,29 +610,58 @@ def test_gemini_initial_schema_is_compact():
     assert set(activity["properties"]) == {"name", "location", "start_time", "duration_minutes"}
 
 
-def test_gaos_bad_request_maps_to_clean_502():
-    from app.services.ai_service import AIService
+@pytest.mark.parametrize("output", ["not-json", ""])
+def test_grok_invalid_or_empty_output_fails_safely_after_retry(output):
     from app.utils.responses import APIError
 
-    BadRequestError = type(
-        "BadRequestError", (Exception,), {"__module__": "google.genai._gaos.lib.compat_errors"}
-    )
+    calls = 0
+    def handler(request):
+        nonlocal calls
+        calls += 1
+        return xai_json_response(request, output)
 
-    class Interactions:
-        def create(self, **_kwargs):
-            error = BadRequestError("Request contains an invalid argument.")
-            error.status_code = 400
-            raise error
-
-    client = type("Client", (), {"interactions": Interactions()})()
-    service = AIService(
-        {"GEMINI_API_KEY": "test", "GEMINI_MODEL": "gemini-test", "GEMINI_TIMEOUT_SECONDS": "60"},
-        client_factory=lambda **_kwargs: client,
-    )
     with pytest.raises(APIError) as raised:
-        service.generate_itinerary(planner_payload())
+        grok_service(handler).generate_itinerary(planner_payload())
+    assert calls == 2
     assert raised.value.status == 502
-    assert raised.value.code == "ai_request_failed"
+    assert raised.value.code == "ai_generation_failed"
+
+
+def test_grok_timeout_fails_gracefully():
+    import httpx
+    from app.utils.responses import APIError
+
+    def handler(request):
+        raise httpx.ReadTimeout("timed out", request=request)
+
+    with pytest.raises(APIError) as raised:
+        grok_service(handler).generate_itinerary(planner_payload())
+    assert raised.value.status == 504
+    assert raised.value.code == "ai_timeout"
+
+
+@pytest.mark.parametrize(("status", "code", "expected_status"), [
+    (401, "ai_authentication_failed", 502),
+    (429, "ai_rate_limited", 429),
+])
+def test_grok_http_errors_are_sanitized(status, code, expected_status):
+    import httpx
+    from app.utils.responses import APIError
+
+    def handler(request):
+        return httpx.Response(status, request=request, json={"error": "upstream secret details"})
+
+    with pytest.raises(APIError) as raised:
+        grok_service(handler).generate_itinerary(planner_payload())
+    assert raised.value.status == expected_status
+    assert raised.value.code == code
+    assert "secret" not in raised.value.message
+
+
+def test_itinerary_preview_requires_authentication(client):
+    response = client.post("/api/itineraries/preview", json=planner_payload())
+    assert response.status_code == 401
+    assert response.json["error"]["code"] == "UNAUTHORIZED"
 
 
 def test_trip_invitation_routes_use_authenticated_atomic_rpcs(auth_headers):
@@ -604,7 +685,7 @@ def test_trip_invitation_routes_use_authenticated_atomic_rpcs(auth_headers):
             return {"id": invite_id, "status": "accepted" if data.get("p_accept") else "pending"}
 
     app = create_app({"TESTING": True, "SUPABASE_URL": "https://example.supabase.co", "SUPABASE_KEY": "test-key",
-                      "SUPABASE_SERVICE_ROLE_KEY": "", "CORS_ORIGINS": [], "GEMINI_API_KEY": "",
+                      "SUPABASE_SERVICE_ROLE_KEY": "", "CORS_ORIGINS": [], "XAI_API_KEY": "",
                       "SUPABASE_FACTORY": InvitationFake})
     api = app.test_client()
 
@@ -639,7 +720,7 @@ def test_admin_cannot_create_trip_invite(auth_headers):
             return super().rpc(name, data)
 
     app = create_app({"TESTING": True, "SUPABASE_URL": "https://example.supabase.co", "SUPABASE_KEY": "test-key",
-                      "SUPABASE_SERVICE_ROLE_KEY": "", "CORS_ORIGINS": [], "GEMINI_API_KEY": "",
+                      "SUPABASE_SERVICE_ROLE_KEY": "", "CORS_ORIGINS": [], "XAI_API_KEY": "",
                       "SUPABASE_FACTORY": AdminFake})
     response = app.test_client().post(
         f"/api/trips/{trip_id}/invites", headers=auth_headers, json={"user_id": target_id}
@@ -691,7 +772,7 @@ def test_equal_expense_contract_delegates_atomic_split_to_database(auth_headers)
             return super().rpc(name, data)
 
     app = create_app({"TESTING": True, "SUPABASE_URL": "https://example.supabase.co", "SUPABASE_KEY": "test-key",
-                      "SUPABASE_SERVICE_ROLE_KEY": "", "CORS_ORIGINS": [], "GEMINI_API_KEY": "",
+                      "SUPABASE_SERVICE_ROLE_KEY": "", "CORS_ORIGINS": [], "XAI_API_KEY": "",
                       "SUPABASE_FACTORY": ExpenseFake})
     api = app.test_client()
     response = api.post(f"/api/trips/{trip_id}/expenses", headers=auth_headers, json={

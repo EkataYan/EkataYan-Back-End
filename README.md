@@ -11,7 +11,7 @@ remains the database authorization boundary.
 
 ## Setup
 
-Requirements: Python 3.11 or newer, a Supabase project, and optionally an AI provider and WeatherAPI account.
+Requirements: Python 3.11 or newer, a Supabase project, and optionally an xAI and WeatherAPI account.
 
 ```powershell
 cd backend
@@ -22,9 +22,9 @@ python -m pip install -r requirements-dev.txt
 Copy-Item .env.example .env
 ```
 
-Set `SUPABASE_URL` and `SUPABASE_KEY` in `backend/.env`. `SUPABASE_KEY` must be the project’s publishable key (or legacy anon key), never a service-role/secret key. Use explicit `CORS_ORIGINS`; the sample contains development origins. Set `AI_BASE_URL`, `AI_MODEL`, and `AI_API_KEY` only when enabling the OpenAI-compatible itinerary provider. Set `WEATHER_API_KEY` only when enabling WeatherAPI.
+Set `SUPABASE_URL` and `SUPABASE_KEY` in `backend/.env`. `SUPABASE_KEY` must be the project’s publishable key (or legacy anon key), never a service-role/secret key. Use explicit `CORS_ORIGINS`; the sample contains development origins. Set `AI_PROVIDER=grok`, `AI_MODEL=grok-4.6`, and `XAI_API_KEY` only when enabling itinerary generation. Set `WEATHER_API_KEY` only when enabling WeatherAPI.
 
-AI configuration is optional. Omit `AI_API_KEY`, `AI_BASE_URL`, and `AI_MODEL` to run the backend with itinerary generation disabled, or set all three to enable the OpenAI-compatible provider. Calls to the generation endpoint return HTTP 503 while AI is disabled; unrelated endpoints continue normally.
+AI configuration is optional. Omit `XAI_API_KEY` to run the backend with itinerary generation disabled. Calls to itinerary endpoints return HTTP 503 while AI is disabled; unrelated endpoints continue normally.
 
 Start the development server from `backend/`:
 
@@ -59,8 +59,8 @@ Deploy the `EkataYan-Back-End` repository with these Railway service settings:
 
 The committed `backend/Procfile` supplies the same start command when Railway
 uses automatic Railpack detection. Railway supplies `PORT`; do not hardcode it.
-The 90-second worker timeout is intentionally longer than the backend's
-45-second AI provider timeout.
+The worker timeout is intentionally longer than the backend's default
+60-second AI provider timeout.
 
 Required Railway variables are `SUPABASE_URL` and exactly one client-safe key:
 prefer `SUPABASE_PUBLISHABLE_KEY`; `SUPABASE_ANON_KEY` and the legacy
@@ -68,10 +68,10 @@ prefer `SUPABASE_PUBLISHABLE_KEY`; `SUPABASE_ANON_KEY` and the legacy
 secret/service-role key as any of those values. `FLASK_ENV` should be
 `production` and `FLASK_DEBUG` must be `false`.
 
-Optional feature variables are `AI_PROVIDER`, `AI_API_KEY`, `AI_BASE_URL`,
-`AI_MODEL`, `WEATHER_PROVIDER`, `WEATHER_API_KEY`, and `CORS_ORIGINS`. AI is
-enabled only when all three `AI_API_KEY`, `AI_BASE_URL`, and `AI_MODEL` values
-are present. Weather returns a controlled 503 when its key is absent. An absent
+Optional feature variables are `AI_PROVIDER`, `AI_MODEL`, `AI_TIMEOUT_SECONDS`,
+`XAI_API_KEY`, `WEATHER_PROVIDER`, `WEATHER_API_KEY`, and `CORS_ORIGINS`. AI is
+enabled when `AI_PROVIDER=grok` and `XAI_API_KEY` is present; the model defaults
+to `grok-4.6`. Weather returns a controlled 503 when its key is absent. An absent
 or invalid Supabase configuration also returns a controlled 503 from protected
 routes instead of preventing Gunicorn from booting; `/health` remains
 dependency-free.
@@ -103,7 +103,7 @@ Protected endpoints:
 - `GET /api/auth/session`; `GET`/`PUT`/`PATCH /api/users/me`
 - `POST`/`GET /api/trips`; `GET`/`PUT`/`DELETE /api/trips/<trip_id>`
 - `POST`/`GET /api/trips/<trip_id>/members`; `DELETE /api/trips/<trip_id>/members/<user_id>`
-- `POST /api/itineraries/generate`; `GET /api/trips/<trip_id>/itineraries`
+- `POST /api/itineraries/preview`; `POST /api/itineraries/generate`; `GET /api/trips/<trip_id>/itineraries`
 - `GET /api/weather?location=&date=` (or authenticated latitude/longitude coordinates)
 - `POST`/`GET /api/trips/<trip_id>/expenses`; `PUT`/`DELETE /api/expenses/<expense_id>`
 - `POST`/`GET /api/trips/<trip_id>/messages`
