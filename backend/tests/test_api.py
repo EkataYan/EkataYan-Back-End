@@ -910,3 +910,56 @@ def test_equal_expense_contract_delegates_atomic_split_to_database(auth_headers)
     assert "participants" not in call["p_data"]
     assert api.get(f"/api/trips/{trip_id}/expenses", headers=auth_headers).status_code == 200
     assert api.get(f"/api/trips/{trip_id}/expense-balances", headers=auth_headers).status_code == 200
+
+
+def test_trip_crud_survives_reload_and_rejects_other_user():
+    from app import create_app
+    from app.utils.responses import APIError
+    from conftest import FakeSupabase
+
+    class PersistentTripFake(FakeSupabase):
+        shared_trips = []
+        users = {
+            "user-a-token": {"id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "email": "a@example.com"},
+            "user-b-token": {"id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "email": "b@example.com"},
+        }
+
+        def __init__(self, config, token):
+            super().__init__(config, token)
+            self.user = self.users.get(token, self.user)
+            self.rows["trips"] = self.shared_trips
+
+        def get_user(self):
+            if self.token not in self.users:
+                raise APIError("UNAUTHORIZED", "Invalid or expired access token.", 401)
+            return self.user
+
+        def select(self, table, filters=None, **kwargs):
+            rows = super().select(table, filters, **kwargs)
+            return [row for row in rows if table != "trips" or row.get("created_by") == self.user["id"]]
+
+    app = create_app({
+        "TESTING": True, "SUPABASE_URL": "https://example.supabase.co", "SUPABASE_KEY": "test-key",
+        "SUPABASE_SERVICE_ROLE_KEY": "", "CORS_ORIGINS": [], "GEMINI_API_KEY": "",
+        "SUPABASE_FACTORY": PersistentTripFake,
+    })
+    api = app.test_client()
+    owner = {"Authorization": "Bearer user-a-token"}
+    other = {"Authorization": "Bearer user-b-token"}
+    payload = {
+        "name": "Persistent trip", "destinations": ["Kandy"], "start_date": "2026-10-01",
+        "end_date": "2026-10-02", "budget": "1000.00",
+    }
+
+    created = api.post("/api/trips", headers=owner, json=payload)
+    assert created.status_code == 201
+    trip_id = created.json["data"]["id"]
+    assert [row["id"] for row in api.get("/api/trips", headers=owner).json["data"]] == [trip_id]
+
+    updated = api.put(f"/api/trips/{trip_id}", headers=owner, json=payload | {"name": "Updated trip"})
+    assert updated.status_code == 200
+    assert api.get("/api/trips", headers=owner).json["data"][0]["name"] == "Updated trip"
+
+    assert api.delete(f"/api/trips/{trip_id}", headers=other).status_code == 404
+    assert api.delete(f"/api/trips/{trip_id}", headers=owner).status_code == 200
+    assert api.get("/api/trips", headers=owner).json["data"] == []
