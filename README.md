@@ -11,7 +11,7 @@ remains the database authorization boundary.
 
 ## Setup
 
-Requirements: Python 3.11 or newer, a Supabase project, and optionally an xAI and WeatherAPI account.
+Requirements: Python 3.11 or newer, a Supabase project, and optionally a Gemini API and WeatherAPI account.
 
 ```powershell
 cd backend
@@ -22,9 +22,9 @@ python -m pip install -r requirements-dev.txt
 Copy-Item .env.example .env
 ```
 
-Set `SUPABASE_URL` and `SUPABASE_KEY` in `backend/.env`. `SUPABASE_KEY` must be the project’s publishable key (or legacy anon key), never a service-role/secret key. Use explicit `CORS_ORIGINS`; the sample contains development origins. Set `AI_PROVIDER=grok`, `AI_MODEL=grok-4.6`, and `XAI_API_KEY` only when enabling itinerary generation. Set `WEATHER_API_KEY` only when enabling WeatherAPI.
+Set `SUPABASE_URL` and `SUPABASE_KEY` in `backend/.env`. `SUPABASE_KEY` must be the project’s publishable key (or legacy anon key), never a service-role/secret key. Use explicit `CORS_ORIGINS`; the sample contains development origins. Set `AI_PROVIDER=gemini`, `AI_MODEL=gemini-3.5-flash-lite`, and `GEMINI_API_KEY` only when enabling itinerary generation. Set `WEATHER_API_KEY` only when enabling WeatherAPI.
 
-AI configuration is optional. Omit `XAI_API_KEY` to run the backend with itinerary generation disabled. Calls to itinerary endpoints return HTTP 503 while AI is disabled; unrelated endpoints continue normally.
+AI configuration is optional. Omit `GEMINI_API_KEY` to run the backend with itinerary generation disabled. Calls to itinerary endpoints return HTTP 503 while AI is disabled; unrelated endpoints continue normally.
 
 Start the development server from `backend/`:
 
@@ -69,9 +69,9 @@ secret/service-role key as any of those values. `FLASK_ENV` should be
 `production` and `FLASK_DEBUG` must be `false`.
 
 Optional feature variables are `AI_PROVIDER`, `AI_MODEL`, `AI_TIMEOUT_SECONDS`,
-`XAI_API_KEY`, `WEATHER_PROVIDER`, `WEATHER_API_KEY`, and `CORS_ORIGINS`. AI is
-enabled when `AI_PROVIDER=grok` and `XAI_API_KEY` is present; the model defaults
-to `grok-4.6`. Weather returns a controlled 503 when its key is absent. An absent
+`GEMINI_API_KEY`, `WEATHER_PROVIDER`, `WEATHER_API_KEY`, and `CORS_ORIGINS`. AI is
+enabled when `AI_PROVIDER=gemini` and `GEMINI_API_KEY` is present; the model defaults
+to `gemini-3.5-flash-lite`. Weather returns a controlled 503 when its key is absent. An absent
 or invalid Supabase configuration also returns a controlled 503 from protected
 routes instead of preventing Gunicorn from booting; `/health` remains
 dependency-free.
