@@ -1,4 +1,5 @@
 """Gemini-backed, structured Sri Lanka itinerary generation."""
+from copy import deepcopy
 from datetime import datetime, timedelta
 import json
 import logging
@@ -21,6 +22,17 @@ logger = logging.getLogger(__name__)
 LANGUAGE_NAMES = {"en": "English", "si": "Sinhala", "ta": "Tamil"}
 
 
+class ItineraryContractError(ValueError):
+    """A schema-valid provider response that violates planner-specific rules."""
+
+    def __init__(self, field, reason, expected, received):
+        super().__init__(reason)
+        self.field = field
+        self.reason = reason
+        self.expected = expected
+        self.received = received
+
+
 APPLICATION_ITINERARY_SCHEMA = AiItineraryResponse.model_json_schema()
 
 INITIAL_RESPONSE_SCHEMA = {
@@ -28,6 +40,7 @@ INITIAL_RESPONSE_SCHEMA = {
     "properties": {
         "trip": {
             "type": "object",
+            "additionalProperties": False,
             "properties": {
                 "title": {"type": "string"},
                 "summary": {"type": "string"},
@@ -37,8 +50,11 @@ INITIAL_RESPONSE_SCHEMA = {
         },
         "days": {
             "type": "array",
+            "minItems": 1,
+            "maxItems": 30,
             "items": {
                 "type": "object",
+                "additionalProperties": False,
                 "properties": {
                     "day_number": {"type": "integer"},
                     "date": {"type": "string", "format": "date"},
@@ -46,8 +62,11 @@ INITIAL_RESPONSE_SCHEMA = {
                     "title": {"type": "string"},
                     "activities": {
                         "type": "array",
+                        "minItems": 1,
+                        "maxItems": 5,
                         "items": {
                             "type": "object",
+                            "additionalProperties": False,
                             "properties": {
                                 "name": {"type": "string"},
                                 "location": {"type": "string"},
@@ -63,9 +82,11 @@ INITIAL_RESPONSE_SCHEMA = {
         },
         "cost_estimate": {
             "type": "object",
+            "additionalProperties": False,
             "properties": {
                 "total": {
                     "type": "object",
+                    "additionalProperties": False,
                     "properties": {
                         "min": {"type": "integer", "minimum": 0},
                         "max": {"type": "integer", "minimum": 0},
@@ -77,6 +98,7 @@ INITIAL_RESPONSE_SCHEMA = {
         },
     },
     "required": ["trip", "days", "cost_estimate"],
+    "additionalProperties": False,
 }
 
 INITIAL_SYSTEM_INSTRUCTION = """You are the itinerary engine for EkataYan and an expert Sri Lanka travel planner.
@@ -154,12 +176,20 @@ class AIService:
         prompt = self._initial_prompt(planner)
         prompt_ms = round((time.monotonic() - prompt_started) * 1000)
         ai_started = time.monotonic()
-        raw, usage = self._request_structured(prompt, INITIAL_SYSTEM_INSTRUCTION, INITIAL_RESPONSE_SCHEMA)
+        response_schema = self._preview_schema(planner)
+        raw, usage = self._request_structured(prompt, INITIAL_SYSTEM_INSTRUCTION, response_schema)
         ai_ms = round((time.monotonic() - ai_started) * 1000)
         json_started = time.monotonic()
+        decoded = None
+        structure = None
         try:
             decoded = json.loads(raw)
             json_ms = round((time.monotonic() - json_started) * 1000)
+            structure = self._response_structure(decoded, response_schema)
+            logger.info(
+                "AI structured response received provider=%s model=%s mode=preview structure=%s",
+                self.provider, self.model, structure,
+            )
             validation_started = time.monotonic()
             initial = InitialItineraryResponse.model_validate(decoded)
             validation_ms = round((time.monotonic() - validation_started) * 1000)
@@ -167,7 +197,7 @@ class AIService:
             result = self._expand_initial_itinerary(initial, planner)
             normalize_ms = round((time.monotonic() - normalize_started) * 1000)
         except (ValidationError, ValueError, KeyError, TypeError, json.JSONDecodeError) as error:
-            self._raise_validation_error(error, started, "preview")
+            self._raise_validation_error(error, started, "preview", structure)
         output_tokens = getattr(usage, "candidates_token_count", None)
         logger.info(
             "AI itinerary succeeded provider=%s model=%s mode=preview prompt_ms=%s ai_request_ms=%s "
@@ -224,19 +254,74 @@ class AIService:
             raise APIError("ai_unavailable", "AI itinerary generation is temporarily unavailable.", 503) from None
         raise APIError("ai_unavailable", "AI itinerary generation is temporarily unavailable.", 503) from None
 
-    def _raise_validation_error(self, error, started, mode):
+    def _raise_validation_error(self, error, started, mode, structure=None):
         issues = []
         if isinstance(error, ValidationError):
             issues = [
-                {"path": ".".join(str(part) for part in item["loc"]), "message": item["msg"]}
+                {
+                    "field": self._format_validation_path(item["loc"]),
+                    "reason": item["msg"],
+                    "type": item["type"],
+                }
                 for item in error.errors(include_input=False, include_url=False)[:20]
             ]
+        elif isinstance(error, ItineraryContractError):
+            issues = [{
+                "field": error.field,
+                "reason": error.reason,
+                "expected": error.expected,
+                "received": error.received,
+            }]
+        else:
+            issues = [{
+                "field": "$",
+                "reason": str(error)[:500] or type(error).__name__,
+                "type": type(error).__name__,
+            }]
+        primary = issues[0]
         logger.warning(
-            "AI response validation failed provider=%s model=%s mode=%s class=%s duration_ms=%s issues=%s",
+            "AI response validation failed provider=%s model=%s mode=%s class=%s duration_ms=%s "
+            "field=%s reason=%s expected=%s received=%s issues=%s structure=%s",
             self.provider, self.model, mode, type(error).__name__,
-            round((time.monotonic() - started) * 1000), issues,
+            round((time.monotonic() - started) * 1000), primary.get("field"), primary.get("reason"),
+            primary.get("expected"), primary.get("received"), issues, structure,
         )
         raise APIError("ai_generation_failed", "We couldn't generate your itinerary.", 502) from None
+
+    @staticmethod
+    def _format_validation_path(location):
+        path = ""
+        for part in location:
+            if isinstance(part, int):
+                path += f"[{part}]"
+            else:
+                path += ("." if path else "") + str(part)
+        return path or "$"
+
+    @staticmethod
+    def _response_structure(decoded, schema):
+        expected_keys = sorted(schema.get("required", []))
+        if not isinstance(decoded, dict):
+            return {"root_type": type(decoded).__name__, "expected_root_type": "object"}
+        returned_keys = sorted(str(key) for key in decoded)
+        days = decoded.get("days")
+        activity_counts = []
+        if isinstance(days, list):
+            activity_counts = [
+                len(day.get("activities", [])) if isinstance(day, dict) and isinstance(day.get("activities"), list)
+                else None
+                for day in days[:30]
+            ]
+        return {
+            "root_type": "object",
+            "top_level_keys": returned_keys,
+            "expected_top_level_keys": expected_keys,
+            "missing_top_level_keys": sorted(set(expected_keys) - set(returned_keys)),
+            "unexpected_top_level_keys": sorted(set(returned_keys) - set(schema.get("properties", {}))),
+            "field_types": {key: type(decoded[key]).__name__ for key in returned_keys},
+            "day_count": len(days) if isinstance(days, list) else None,
+            "activity_counts": activity_counts,
+        }
 
     @staticmethod
     def _initial_prompt(planner):
@@ -268,17 +353,40 @@ class AIService:
         return prompt
 
     @staticmethod
+    def _activity_limits(planner):
+        return {"Relaxed": (2, 3), "Balanced": (3, 4), "Packed": (4, 5)}.get(
+            planner.travel_pace or "Balanced", (3, 4)
+        )
+
+    @classmethod
+    def _preview_schema(cls, planner):
+        """Apply planner-specific invariants to Gemini's supported JSON Schema subset."""
+        schema = deepcopy(INITIAL_RESPONSE_SCHEMA)
+        days = schema["properties"]["days"]
+        days["minItems"] = planner.duration_days
+        days["maxItems"] = planner.duration_days
+        minimum, maximum = cls._activity_limits(planner)
+        activities = days["items"]["properties"]["activities"]
+        activities["minItems"] = minimum
+        activities["maxItems"] = maximum
+        return schema
+
+    @staticmethod
     def _expand_initial_itinerary(initial, planner):
         if len(initial.days) != planner.duration_days:
-            raise ValueError(f"incorrect day count: expected {planner.duration_days}, received {len(initial.days)}")
-        limits = {"Relaxed": (2, 3), "Balanced": (3, 4), "Packed": (4, 5)}
-        minimum, maximum = limits.get(planner.travel_pace or "Balanced", (3, 4))
+            raise ItineraryContractError(
+                "days", "incorrect day count", planner.duration_days, len(initial.days)
+            )
+        minimum, maximum = AIService._activity_limits(planner)
         days = []
         per_day_min = initial.cost_estimate.total.min // planner.duration_days
         per_day_max = initial.cost_estimate.total.max // planner.duration_days
         for index, source_day in enumerate(initial.days, 1):
             if not minimum <= len(source_day.activities) <= maximum:
-                raise ValueError(f"day {index} activity count must be {minimum}-{maximum}")
+                raise ItineraryContractError(
+                    f"days[{index - 1}].activities", "activity count outside travel-pace limits",
+                    f"{minimum}-{maximum}", len(source_day.activities),
+                )
             activities = []
             for activity_index, source in enumerate(source_day.activities, 1):
                 start = datetime.combine(planner.start_date, source.start_time)
