@@ -575,8 +575,6 @@ def gemini_response(output_text):
 
 
 def test_gemini_structured_output_preserves_contract_and_disables_retries():
-    from app.services.ai_service import INITIAL_RESPONSE_SCHEMA
-
     service, models, constructor = gemini_service(
         lambda _call: gemini_response(json.dumps(valid_gemini_preview())))
     result = service.generate_itinerary(planner_payload())
@@ -585,7 +583,13 @@ def test_gemini_structured_output_preserves_contract_and_disables_retries():
     call = models.calls[0]
     assert call["model"] == "gemini-3.5-flash-lite"
     assert call["config"].response_mime_type == "application/json"
-    assert call["config"].response_json_schema == INITIAL_RESPONSE_SCHEMA
+    schema = call["config"].response_json_schema
+    assert schema["properties"]["days"]["minItems"] == 3
+    assert schema["properties"]["days"]["maxItems"] == 3
+    activities = schema["properties"]["days"]["items"]["properties"]["activities"]
+    assert activities["minItems"] == 3
+    assert activities["maxItems"] == 4
+    assert schema["additionalProperties"] is False
     assert "Sri Lanka" in call["config"].system_instruction
     assert constructor["api_key"] == "test-key"
     assert constructor["http_options"].timeout == 5000
@@ -641,6 +645,83 @@ def test_gemini_initial_schema_is_compact():
     assert set(INITIAL_RESPONSE_SCHEMA["properties"]) == {"trip", "days", "cost_estimate"}
     activity = INITIAL_RESPONSE_SCHEMA["properties"]["days"]["items"]["properties"]["activities"]["items"]
     assert set(activity["properties"]) == {"name", "location", "start_time", "duration_minutes"}
+
+
+def test_gemini_missing_required_field_logs_validation_path(caplog):
+    from app.utils.responses import APIError
+
+    output = valid_gemini_preview()
+    del output["days"][0]["activities"][1]["location"]
+    service, models, _constructor = gemini_service(
+        lambda _call: gemini_response(json.dumps(output)))
+
+    with pytest.raises(APIError) as raised:
+        service.generate_itinerary(planner_payload())
+
+    assert len(models.calls) == 1
+    assert raised.value.code == "ai_generation_failed"
+    assert "field=days[0].activities[1].location" in caplog.text
+    assert "Field required" in caplog.text
+
+
+def test_gemini_wrong_field_type_logs_validation_path(caplog):
+    from app.utils.responses import APIError
+
+    output = valid_gemini_preview()
+    output["days"][0]["activities"][1]["duration_minutes"] = "sixty"
+    service, models, _constructor = gemini_service(
+        lambda _call: gemini_response(json.dumps(output)))
+
+    with pytest.raises(APIError) as raised:
+        service.generate_itinerary(planner_payload())
+
+    assert len(models.calls) == 1
+    assert raised.value.code == "ai_generation_failed"
+    assert "field=days[0].activities[1].duration_minutes" in caplog.text
+    assert "valid integer" in caplog.text
+
+
+def test_gemini_custom_activity_count_failure_is_diagnostic_and_schema_prevents_it(caplog):
+    from app.utils.responses import APIError
+
+    output = valid_gemini_preview()
+    output["days"][0]["activities"] = output["days"][0]["activities"][:2]
+    service, models, _constructor = gemini_service(
+        lambda _call: gemini_response(json.dumps(output)))
+
+    with pytest.raises(APIError) as raised:
+        service.generate_itinerary(planner_payload(travel_pace="Balanced"))
+
+    schema = models.calls[0]["config"].response_json_schema
+    activities = schema["properties"]["days"]["items"]["properties"]["activities"]
+    assert activities["minItems"] == 3
+    assert activities["maxItems"] == 4
+    assert raised.value.code == "ai_generation_failed"
+    assert "field=days[0].activities" in caplog.text
+    assert "reason=activity count outside travel-pace limits" in caplog.text
+    assert "expected=3-4" in caplog.text
+    assert "received=2" in caplog.text
+
+
+def test_gemini_custom_day_count_failure_is_diagnostic_and_schema_prevents_it(caplog):
+    from app.utils.responses import APIError
+
+    output = valid_gemini_preview()
+    output["days"] = output["days"][:2]
+    service, models, _constructor = gemini_service(
+        lambda _call: gemini_response(json.dumps(output)))
+
+    with pytest.raises(APIError) as raised:
+        service.generate_itinerary(planner_payload())
+
+    schema = models.calls[0]["config"].response_json_schema
+    assert schema["properties"]["days"]["minItems"] == 3
+    assert schema["properties"]["days"]["maxItems"] == 3
+    assert raised.value.code == "ai_generation_failed"
+    assert "field=days" in caplog.text
+    assert "reason=incorrect day count" in caplog.text
+    assert "expected=3" in caplog.text
+    assert "received=2" in caplog.text
 
 
 @pytest.mark.parametrize("output", ["not-json", ""])
