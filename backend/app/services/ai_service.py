@@ -1,9 +1,12 @@
-"""xAI Grok-backed, structured Sri Lanka itinerary generation."""
+"""Gemini-backed, structured Sri Lanka itinerary generation."""
 from datetime import datetime, timedelta
 import json
 import logging
+import re
 import time
 
+from google import genai
+from google.genai import errors, types
 import httpx
 from pydantic import ValidationError
 
@@ -16,7 +19,6 @@ from app.utils.responses import APIError
 logger = logging.getLogger(__name__)
 
 LANGUAGE_NAMES = {"en": "English", "si": "Sinhala", "ta": "Tamil"}
-XAI_RESPONSES_URL = "https://api.x.ai/v1/responses"
 
 
 APPLICATION_ITINERARY_SCHEMA = AiItineraryResponse.model_json_schema()
@@ -110,14 +112,20 @@ choose a coherent Sri Lankan route based on duration, party, interests, style, t
 
 class AIService:
     def __init__(self, config, client_factory=None):
-        self.provider = config.get("AI_PROVIDER", "grok").strip().lower()
-        if self.provider != "grok":
+        self.provider = config.get("AI_PROVIDER", "gemini").strip().lower()
+        if self.provider != "gemini":
             raise ValueError(f"Unsupported AI provider: {self.provider}")
-        self.model = config.get("AI_MODEL", "grok-4.6")
-        self.api_key = config["XAI_API_KEY"]
+        self.model = config.get("AI_MODEL", "gemini-3.5-flash-lite")
+        self.api_key = config["GEMINI_API_KEY"]
         timeout_seconds = float(config.get("AI_TIMEOUT_SECONDS", 60))
-        factory = client_factory or httpx.Client
-        self.client = factory(timeout=httpx.Timeout(timeout_seconds))
+        factory = client_factory or genai.Client
+        self.client = factory(
+            api_key=self.api_key,
+            http_options=types.HttpOptions(
+                timeout=int(timeout_seconds * 1000),
+                retry_options=types.HttpRetryOptions(attempts=1),
+            ),
+        )
 
     def generate_itinerary(self, planner_data, modification=None):
         planner = planner_data if isinstance(planner_data, PlannerRequest) else PlannerRequest.model_validate(planner_data)
@@ -126,39 +134,17 @@ class AIService:
         started = time.monotonic()
         logger.info("AI itinerary request started provider=%s model=%s mode=modify duration_days=%s",
                     self.provider, self.model, planner.duration_days)
-        base_prompt = self._prompt(planner, modification)
-        last_error = None
-        for attempt in range(2):
-            prompt = base_prompt if attempt == 0 else base_prompt + (
-                "\nYour prior response failed application validation. Regenerate the complete itinerary as valid JSON "
-                "matching the required schema exactly."
-            )
-            try:
-                raw, _usage = self._request_structured(
-                    prompt, SYSTEM_INSTRUCTION, APPLICATION_ITINERARY_SCHEMA, "ekatayan_itinerary"
-                )
-                result = AiItineraryResponse.model_validate_json(raw)
-                result = self._enforce_deterministic_facts(result, planner)
-                logger.info("AI itinerary succeeded provider=%s model=%s attempt=%s duration_ms=%s",
-                            self.provider, self.model, attempt + 1,
-                            round((time.monotonic() - started) * 1000))
-                return result
-            except ValidationError as error:
-                last_error = error
-                issues = [
-                    {"path": ".".join(str(part) for part in item["loc"]), "message": item["msg"]}
-                    for item in error.errors(include_input=False, include_url=False)[:20]
-                ]
-                logger.warning("AI itinerary validation failed provider=%s model=%s attempt=%s issues=%s",
-                               self.provider, self.model, attempt + 1, issues)
-            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
-                last_error = error
-                logger.warning("AI response parsing failed provider=%s model=%s attempt=%s error_type=%s",
-                               self.provider, self.model, attempt + 1, type(error).__name__)
-        logger.error("AI itinerary rejected after retry provider=%s model=%s duration_ms=%s error_type=%s",
-                     self.provider, self.model, round((time.monotonic() - started) * 1000),
-                     type(last_error).__name__)
-        raise APIError("ai_generation_failed", "We couldn't generate your itinerary.", 502)
+        raw, _usage = self._request_structured(
+            self._prompt(planner, modification), SYSTEM_INSTRUCTION, APPLICATION_ITINERARY_SCHEMA
+        )
+        try:
+            result = AiItineraryResponse.model_validate_json(raw)
+            result = self._enforce_deterministic_facts(result, planner)
+        except (ValidationError, ValueError, TypeError) as error:
+            self._raise_validation_error(error, started, "modify")
+        logger.info("AI itinerary succeeded provider=%s model=%s mode=modify duration_ms=%s",
+                    self.provider, self.model, round((time.monotonic() - started) * 1000))
+        return result
 
     def _generate_initial_itinerary(self, planner):
         started = time.monotonic()
@@ -167,115 +153,90 @@ class AIService:
         prompt_started = time.monotonic()
         prompt = self._initial_prompt(planner)
         prompt_ms = round((time.monotonic() - prompt_started) * 1000)
-        last_error = None
-        for attempt in range(2):
-            ai_started = time.monotonic()
-            try:
-                raw, usage = self._request_structured(
-                    prompt if attempt == 0 else prompt + (
-                        "\nYour prior response was invalid. Regenerate the complete JSON with exact dates, "
-                        "day count, and activity limits."
-                    ),
-                    INITIAL_SYSTEM_INSTRUCTION,
-                    INITIAL_RESPONSE_SCHEMA,
-                    "ekatayan_itinerary_preview",
-                )
-                ai_ms = round((time.monotonic() - ai_started) * 1000)
-                json_started = time.monotonic()
-                decoded = json.loads(raw)
-                json_ms = round((time.monotonic() - json_started) * 1000)
-                validation_started = time.monotonic()
-                initial = InitialItineraryResponse.model_validate(decoded)
-                validation_ms = round((time.monotonic() - validation_started) * 1000)
-                normalize_started = time.monotonic()
-                result = self._expand_initial_itinerary(initial, planner)
-                normalize_ms = round((time.monotonic() - normalize_started) * 1000)
-                output_tokens = usage.get("output_tokens") if isinstance(usage, dict) else None
-                logger.info(
-                    "AI itinerary succeeded provider=%s model=%s mode=preview attempt=%s prompt_ms=%s ai_request_ms=%s json_parse_ms=%s "
-                    "schema_validation_ms=%s normalization_ms=%s total_ms=%s prompt_chars=%s response_bytes=%s output_tokens=%s",
-                    self.provider, self.model, attempt + 1, prompt_ms, ai_ms, json_ms, validation_ms, normalize_ms,
-                    round((time.monotonic() - started) * 1000), len(prompt), len(raw.encode("utf-8")), output_tokens,
-                )
-                return result
-            except (ValidationError, ValueError, KeyError, TypeError, json.JSONDecodeError) as error:
-                last_error = error
-                logger.warning("AI response validation failed provider=%s model=%s mode=preview attempt=%s class=%s ai_request_ms=%s",
-                               self.provider, self.model, attempt + 1, type(error).__name__,
-                               round((time.monotonic() - ai_started) * 1000))
-        logger.error("AI preview failed after retry provider=%s model=%s class=%s total_ms=%s",
-                     self.provider, self.model, type(last_error).__name__,
-                     round((time.monotonic() - started) * 1000))
-        raise APIError("ai_generation_failed", "We couldn't generate your itinerary.", 502)
+        ai_started = time.monotonic()
+        raw, usage = self._request_structured(prompt, INITIAL_SYSTEM_INSTRUCTION, INITIAL_RESPONSE_SCHEMA)
+        ai_ms = round((time.monotonic() - ai_started) * 1000)
+        json_started = time.monotonic()
+        try:
+            decoded = json.loads(raw)
+            json_ms = round((time.monotonic() - json_started) * 1000)
+            validation_started = time.monotonic()
+            initial = InitialItineraryResponse.model_validate(decoded)
+            validation_ms = round((time.monotonic() - validation_started) * 1000)
+            normalize_started = time.monotonic()
+            result = self._expand_initial_itinerary(initial, planner)
+            normalize_ms = round((time.monotonic() - normalize_started) * 1000)
+        except (ValidationError, ValueError, KeyError, TypeError, json.JSONDecodeError) as error:
+            self._raise_validation_error(error, started, "preview")
+        output_tokens = getattr(usage, "candidates_token_count", None)
+        logger.info(
+            "AI itinerary succeeded provider=%s model=%s mode=preview prompt_ms=%s ai_request_ms=%s "
+            "json_parse_ms=%s schema_validation_ms=%s normalization_ms=%s total_ms=%s "
+            "prompt_chars=%s response_bytes=%s output_tokens=%s",
+            self.provider, self.model, prompt_ms, ai_ms, json_ms, validation_ms, normalize_ms,
+            round((time.monotonic() - started) * 1000), len(prompt), len(raw.encode("utf-8")), output_tokens,
+        )
+        return result
 
-    def _request_structured(self, prompt, instruction, schema, schema_name):
-        payload = {
-            "model": self.model,
-            "instructions": instruction,
-            "input": prompt,
-            "text": {"format": {
-                "type": "json_schema", "name": schema_name, "schema": schema, "strict": True,
-            }},
-        }
+    def _request_structured(self, prompt, instruction, schema):
         request_started = time.monotonic()
         try:
-            response = self.client.post(
-                XAI_RESPONSES_URL,
-                headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
-                json=payload,
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=instruction,
+                    response_mime_type="application/json",
+                    response_json_schema=schema,
+                ),
             )
-        except httpx.TimeoutException:
-            logger.warning("AI request timed out provider=%s model=%s duration_ms=%s", self.provider,
-                           self.model, round((time.monotonic() - request_started) * 1000))
-            raise APIError("ai_timeout", "Itinerary generation took too long. Please try again.", 504) from None
-        except httpx.RequestError as error:
-            logger.warning("AI network request failed provider=%s model=%s class=%s duration_ms=%s",
-                           self.provider, self.model, type(error).__name__,
-                           round((time.monotonic() - request_started) * 1000))
-            raise APIError("ai_unavailable", "AI itinerary generation is temporarily unavailable.", 503) from None
-
-        duration_ms = round((time.monotonic() - request_started) * 1000)
-        logger.info("AI response received provider=%s model=%s status=%s duration_ms=%s",
-                    self.provider, self.model, response.status_code, duration_ms)
-        self._raise_http_error(response.status_code, duration_ms)
-        try:
-            data = response.json()
-        except ValueError as error:
-            raise ValueError("xAI returned an invalid response envelope") from error
-        raw = self._extract_output_text(data)
+        except (errors.APIError, TimeoutError, httpx.RequestError) as error:
+            self._raise_provider_error(error, request_started)
+        raw = response.text or ""
         if not raw.strip():
-            raise ValueError("xAI returned an empty response")
-        return raw, data.get("usage", {})
+            logger.warning("AI provider returned empty output provider=%s model=%s duration_ms=%s",
+                           self.provider, self.model,
+                           round((time.monotonic() - request_started) * 1000))
+            raise APIError("ai_generation_failed", "We couldn't generate your itinerary.", 502)
+        logger.info("AI provider response received provider=%s model=%s duration_ms=%s",
+                    self.provider, self.model, round((time.monotonic() - request_started) * 1000))
+        return raw, getattr(response, "usage_metadata", None)
 
-    def _raise_http_error(self, status, duration_ms):
-        if status < 400:
-            return
-        logger.warning("AI provider request failed provider=%s model=%s status=%s duration_ms=%s",
-                       self.provider, self.model, status, duration_ms)
+    def _raise_provider_error(self, error, request_started):
+        status = getattr(error, "status_code", getattr(error, "code", None))
+        message = getattr(error, "message", None) or str(error)
+        message = message.replace(self.api_key, "<redacted>") if self.api_key else message
+        message = re.sub(r"(?i)bearer\s+\S+", "Bearer <redacted>", message)[:1000]
+        logger.warning(
+            "AI provider request failed provider=%s model=%s status=%s class=%s duration_ms=%s message=%s",
+            self.provider, self.model, status, type(error).__name__,
+            round((time.monotonic() - request_started) * 1000), message,
+        )
+        if isinstance(error, (TimeoutError, httpx.TimeoutException)) or status in (408, 504):
+            raise APIError("ai_timeout", "Itinerary generation took too long. Please try again.", 504) from None
+        if status == 400:
+            raise APIError("ai_request_failed", "The AI itinerary request could not be processed.", 502) from None
         if status in (401, 403):
-            raise APIError("ai_authentication_failed", "AI itinerary generation authentication failed.", 502)
+            raise APIError("ai_authentication_failed", "AI itinerary generation authentication failed.", 502) from None
         if status == 429:
-            raise APIError("ai_rate_limited", "AI itinerary generation is busy. Please try again shortly.", 429)
-        if status in (408, 504):
-            raise APIError("ai_timeout", "Itinerary generation took too long. Please try again.", 504)
-        if status in (404, 422):
-            raise APIError("ai_model_unavailable", "The configured AI model is unavailable.", 503)
-        if status >= 500:
-            raise APIError("ai_unavailable", "AI itinerary generation is temporarily unavailable.", 503)
-        raise APIError("ai_request_failed", "The AI itinerary request could not be processed.", 502)
+            raise APIError("ai_rate_limited", "AI itinerary generation quota was exceeded. Please try again later.", 429) from None
+        if isinstance(status, int) and status >= 500:
+            raise APIError("ai_unavailable", "AI itinerary generation is temporarily unavailable.", 503) from None
+        raise APIError("ai_unavailable", "AI itinerary generation is temporarily unavailable.", 503) from None
 
-    @staticmethod
-    def _extract_output_text(data):
-        if isinstance(data.get("output_text"), str):
-            return data["output_text"]
-        parts = []
-        for output in data.get("output", []):
-            if not isinstance(output, dict) or output.get("type") != "message":
-                continue
-            for content in output.get("content", []):
-                if isinstance(content, dict) and content.get("type") == "output_text" and isinstance(content.get("text"), str):
-                    parts.append(content["text"])
-        return "".join(parts)
+    def _raise_validation_error(self, error, started, mode):
+        issues = []
+        if isinstance(error, ValidationError):
+            issues = [
+                {"path": ".".join(str(part) for part in item["loc"]), "message": item["msg"]}
+                for item in error.errors(include_input=False, include_url=False)[:20]
+            ]
+        logger.warning(
+            "AI response validation failed provider=%s model=%s mode=%s class=%s duration_ms=%s issues=%s",
+            self.provider, self.model, mode, type(error).__name__,
+            round((time.monotonic() - started) * 1000), issues,
+        )
+        raise APIError("ai_generation_failed", "We couldn't generate your itinerary.", 502) from None
 
     @staticmethod
     def _initial_prompt(planner):
@@ -366,9 +327,8 @@ class AIService:
             "travel_time_minutes. Every nested field in the response schema is required unless nullable. "
             f"Write all human-readable itinerary content in {language_name}; keep JSON property names unchanged "
             "and preserve Sri Lankan place names unless a standard localized name is appropriate.\n"
-            "Required response JSON schema:\n"
-            + json.dumps(APPLICATION_ITINERARY_SCHEMA, separators=(",", ":"))
-            + "\nPlanner request:\n" + json.dumps(normalized, separators=(",", ":"))
+            "Return only the structured response requested by the provider configuration.\n"
+            "Planner request:\n" + json.dumps(normalized, separators=(",", ":"))
         )
         if modification:
             prompt += "\nModify the supplied itinerary while preserving immutable facts:\n" + json.dumps(
