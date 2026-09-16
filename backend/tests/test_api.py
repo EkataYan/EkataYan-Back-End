@@ -1046,7 +1046,9 @@ def test_trip_crud_survives_reload_and_rejects_other_user():
     created = api.post("/api/trips", headers=owner, json=payload)
     assert created.status_code == 201
     trip_id = created.json["data"]["id"]
-    assert [row["id"] for row in api.get("/api/trips", headers=owner).json["data"]] == [trip_id]
+    owner_trips = api.get("/api/trips", headers=owner).json["data"]
+    assert [row["id"] for row in owner_trips] == [trip_id]
+    assert owner_trips[0]["can_delete"] is True
 
     updated = api.put(f"/api/trips/{trip_id}", headers=owner, json=payload | {"name": "Updated trip"})
     assert updated.status_code == 200

@@ -15,14 +15,20 @@ logger = logging.getLogger(__name__)
 def create():
     data = parse(TripInput).model_dump(mode="json")
     data["created_by"] = g.user_id
-    return success(TripRepository(g.db).create(data), 201)
+    trip = TripRepository(g.db).create(data)
+    return success(trip | {"can_delete": True}, 201)
 
 
 @bp.get("/trips")
 @authenticated
 def list_trips():
     page = pagination()
-    return success(TripRepository(g.db).list(page), pagination=page)
+    trips = TripRepository(g.db).list(page)
+    # Deleting a shared trip is owner-only. Expose that server-derived capability
+    # so the client can offer members the existing leave flow instead of sending
+    # a guaranteed-forbidden DELETE request.
+    visible_trips = [trip | {"can_delete": trip["created_by"] == g.user_id} for trip in trips]
+    return success(visible_trips, pagination=page)
 
 
 @bp.get("/trips/<trip_id>")
