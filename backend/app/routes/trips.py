@@ -4,7 +4,7 @@ from flask import Blueprint, g
 from app.middleware.auth_middleware import authenticated, require_trip
 from app.repositories import ItineraryRepository, TripRepository
 from app.utils.responses import success
-from app.utils.validators import TripInput, identifier, pagination, parse
+from app.utils.validators import BudgetInput, TripInput, identifier, pagination, parse
 
 bp = Blueprint("trips", __name__)
 logger = logging.getLogger(__name__)
@@ -61,3 +61,12 @@ def delete_trip(trip_id):
     require_trip(trip_id, owner=True)
     TripRepository(g.db).delete(trip_id)
     return success({"deleted": True})
+
+
+@bp.patch("/trips/<trip_id>/budget")
+@authenticated
+def set_budget(trip_id):
+    trip_id = identifier(trip_id)
+    data = parse(BudgetInput, error_status=400)
+    require_trip(trip_id, admin=True)
+    return success(TripRepository(g.db).set_budget(trip_id, str(data.budget_amount)))
