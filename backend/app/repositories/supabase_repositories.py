@@ -22,6 +22,8 @@ class TripRepository:
     def get(self, trip_id): return self.db.one("trips", {"id": trip_id})
     def update(self, trip_id, data): return self.db.update("trips", {"id": trip_id}, data)
     def delete(self, trip_id): return self.db.delete("trips", {"id": trip_id})
+    def set_budget(self, trip_id, amount):
+        return self.db.rpc("set_trip_budget", {"p_trip_id": trip_id, "p_budget_amount": amount})
 
 
 class MembershipRepository:
@@ -68,6 +70,12 @@ class ExpenseRepository:
         return self.db.rpc("list_trip_expenses_public", {"p_trip_id": trip_id})
     def balances(self, trip_id):
         return self.db.rpc("get_trip_expense_balances", {"p_trip_id": trip_id})
+    def update_equal(self, trip_id, expense_id, data):
+        return self.db.rpc("update_equal_expense", {"p_trip_id": trip_id, "p_expense_id": expense_id, "p_data": data})
+    def settlements(self, trip_id):
+        return self.db.rpc("list_trip_settlements_public", {"p_trip_id": trip_id})
+    def create_settlement(self, trip_id, data):
+        return self.db.rpc("record_settlement", {"p_trip_id": trip_id, "p_data": data})
 
 
 class NotificationRepository:

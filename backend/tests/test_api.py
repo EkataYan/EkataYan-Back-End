@@ -912,6 +912,98 @@ def test_equal_expense_contract_delegates_atomic_split_to_database(auth_headers)
     assert api.get(f"/api/trips/{trip_id}/expense-balances", headers=auth_headers).status_code == 200
 
 
+def test_budget_update_requires_admin_or_owner_and_uses_atomic_rpc(auth_headers):
+    from app import create_app
+    from conftest import FakeSupabase
+    trip_id = "00000000-0000-4000-8000-000000000020"
+
+    class BudgetFake(FakeSupabase):
+        calls = []
+        role = "admin"
+        def __init__(self, config, token):
+            super().__init__(config, token)
+            self.rows["trips"] = [{"id": trip_id, "created_by": "00000000-0000-4000-8000-000000000099"}]
+            self.rows["trip_members"] = [{"trip_id": trip_id, "user_id": self.user["id"], "role": self.role}]
+        def rpc(self, name, data):
+            self.calls.append((name, data)); return {"trip_id": trip_id, "budget_amount": data["p_budget_amount"]}
+
+    app = create_app({"TESTING": True, "SUPABASE_URL": "https://example.supabase.co", "SUPABASE_KEY": "test-key",
+                      "SUPABASE_SERVICE_ROLE_KEY": "", "CORS_ORIGINS": [], "GEMINI_API_KEY": "", "SUPABASE_FACTORY": BudgetFake})
+    response = app.test_client().patch(f"/api/trips/{trip_id}/budget", headers=auth_headers, json={"budget_amount": "50000.00"})
+    assert response.status_code == 200
+    assert ("set_trip_budget", {"p_trip_id": trip_id, "p_budget_amount": "50000.00"}) in BudgetFake.calls
+    BudgetFake.role = "member"
+    assert app.test_client().patch(f"/api/trips/{trip_id}/budget", headers=auth_headers,
+                                   json={"budget_amount": "50000.00"}).status_code == 403
+
+
+def test_settlement_uses_authenticated_user_as_payer(auth_headers):
+    from app import create_app
+    from conftest import FakeSupabase
+    trip_id = "00000000-0000-4000-8000-000000000020"
+    recipient = "00000000-0000-4000-8000-000000000002"
+
+    class SettlementFake(FakeSupabase):
+        call = None
+        def __init__(self, config, token):
+            super().__init__(config, token)
+            self.rows["trips"] = [{"id": trip_id, "created_by": self.user["id"]}]
+        def rpc(self, name, data):
+            if name == "record_settlement": SettlementFake.call = data
+            return {"id": "00000000-0000-4000-8000-000000000040"}
+
+    app = create_app({"TESTING": True, "SUPABASE_URL": "https://example.supabase.co", "SUPABASE_KEY": "test-key",
+                      "SUPABASE_SERVICE_ROLE_KEY": "", "CORS_ORIGINS": [], "GEMINI_API_KEY": "", "SUPABASE_FACTORY": SettlementFake})
+    response = app.test_client().post(f"/api/trips/{trip_id}/settlements", headers=auth_headers, json={
+        "paid_to": recipient, "amount": "10000.00", "payment_method": "Cash", "note": "Part payment",
+        "paid_by": recipient,
+    })
+    assert response.status_code == 400
+    response = app.test_client().post(f"/api/trips/{trip_id}/settlements", headers=auth_headers, json={
+        "paid_to": recipient, "amount": "10000.00", "payment_method": "Cash", "note": "Part payment",
+    })
+    assert response.status_code == 201
+    assert SettlementFake.call["p_data"]["paid_by"] == "00000000-0000-4000-8000-000000000001"
+
+
+def test_non_owner_cannot_delete_expense_even_if_creator(auth_headers):
+    from app import create_app
+    from conftest import FakeSupabase
+    trip_id = "00000000-0000-4000-8000-000000000020"
+    expense_id = "00000000-0000-4000-8000-000000000030"
+
+    class MemberFake(FakeSupabase):
+        called = False
+        def __init__(self, config, token):
+            super().__init__(config, token)
+            self.rows["trips"] = [{"id": trip_id, "created_by": "00000000-0000-4000-8000-000000000099"}]
+            self.rows["trip_members"] = [{"trip_id": trip_id, "user_id": self.user["id"], "role": "member"}]
+            self.rows["expenses"] = [{"id": expense_id, "trip_id": trip_id, "created_by": self.user["id"]}]
+        def rpc(self, name, data):
+            MemberFake.called = True; return True
+
+    app = create_app({"TESTING": True, "SUPABASE_URL": "https://example.supabase.co", "SUPABASE_KEY": "test-key",
+                      "SUPABASE_SERVICE_ROLE_KEY": "", "CORS_ORIGINS": [], "GEMINI_API_KEY": "", "SUPABASE_FACTORY": MemberFake})
+    response = app.test_client().delete(f"/api/trips/{trip_id}/expenses/{expense_id}", headers=auth_headers)
+    assert response.status_code == 403
+    assert MemberFake.called is False
+
+
+def test_debt_simplification_is_deterministic_and_conserves_balances():
+    from decimal import Decimal
+    from app.routes.expenses import simplify_debts
+    balances = [
+        {"user_id": "a", "display_name": "A", "username": "a", "net_balance": "15000.00"},
+        {"user_id": "b", "display_name": "B", "username": "b", "net_balance": "-5000.00"},
+        {"user_id": "c", "display_name": "C", "username": "c", "net_balance": "-5000.00"},
+        {"user_id": "d", "display_name": "D", "username": "d", "net_balance": "-5000.00"},
+    ]
+    debts = simplify_debts(balances)
+    assert [(row["paid_by"], row["paid_to"], row["amount"]) for row in debts] == [
+        ("b", "a", "5000.00"), ("c", "a", "5000.00"), ("d", "a", "5000.00")]
+    assert sum(Decimal(row["amount"]) for row in debts) == Decimal("15000.00")
+
+
 def test_trip_crud_survives_reload_and_rejects_other_user():
     from app import create_app
     from app.utils.responses import APIError

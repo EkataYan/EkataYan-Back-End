@@ -35,3 +35,18 @@ def test_removing_saved_place_atomically_clears_matching_cover():
     assert "after delete on public.saved_places" in migration
     assert "cover_path = old.external_place_id" in migration
     assert "set search_path = ''" in migration
+
+
+def test_completed_expenses_migration_is_additive_and_secured():
+    migration = (Path(__file__).parents[1] / "supabase" / "migrations" /
+                 "20260916090000_complete_expenses.sql").read_text(encoding="utf-8")
+    assert "create table public.settlements" in migration
+    assert "amount numeric(14,2)" in migration
+    assert "alter table public.settlements enable row level security" in migration
+    assert "private.is_trip_member(trip_id)" in migration
+    assert "role='owner'" in migration
+    assert "delete from public.expense_participants" in migration
+    assert "private.trip_member_net" in migration
+    assert "revoke all on function public.set_trip_budget" in migration
+    assert "public.record_settlement(uuid,jsonb)" in migration
+    assert "drop table" not in migration.lower()

@@ -65,7 +65,7 @@ class TripInput(Input):
     destinations: Annotated[list[Text], Field(min_length=1, max_length=20)]
     start_date: date
     end_date: date
-    budget: Money
+    budget: Money | None = None
     currency: Literal["LKR", "USD", "EUR", "GBP", "INR", "AUD"] = "LKR"
     travelers: Annotated[StrictInt, Field(ge=1, le=100)] = 1
     interests: Tags = []
@@ -167,6 +167,17 @@ class EqualExpenseInput(Input):
         if len(set(self.participant_ids)) != len(self.participant_ids):
             raise ValueError("Participants must be unique.")
         return self
+
+
+class BudgetInput(Input):
+    budget_amount: Annotated[Decimal, Field(gt=0, max_digits=14, decimal_places=2, allow_inf_nan=False)]
+
+
+class SettlementInput(Input):
+    paid_to: UUID
+    amount: Annotated[Decimal, Field(gt=0, max_digits=14, decimal_places=2, allow_inf_nan=False)]
+    payment_method: Literal["Cash", "Bank Transfer", "Other"]
+    note: Annotated[str, Field(max_length=1000)] = ""
 
 
 class MessageInput(Input):
